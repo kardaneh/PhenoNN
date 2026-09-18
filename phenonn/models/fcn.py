@@ -6,53 +6,6 @@
 # To view a copy of this license, visit
 # http://creativecommons.org/licenses/by-nc-sa/4.0/
 
-"""
-Neural network building blocks and radiative transfer-inspired models.
-
-This module represents a PyTorch modules for fully connected networks designed for structured
-data, particularly vertical profile modeling such as atmospheric or canopy
-radiative transfer.
-
-The module includes:
-
-- ``FCBlock``: A reusable fully connected block with normalization and activation.
-- ``FCN``: A configurable fully connected network for sequence-like inputs.
-
-Features
---------
-
-- Modular fully connected components with batch normalization
-- Flexible depth and width configuration for dense networks
-- Support for sequence reshaping and optional dimension expansion
-
-Notes
------
-
-- ``FCN`` expects inputs shaped as (batch_size, feature_channel, seq_length)
-  and internally flattens them before processing.
-
-Examples
---------
-
-Using FCBlock::
-
-    >>> block = FCBlock(128, 64)
-    >>> x = torch.randn(32, 128)
-    >>> y = block(x)
-
-Using FCN::
-
-    >>> model = FCN(
-    ...     feature_channel=6,
-    ...     output_channel=4,
-    ...     num_layers=3,
-    ...     hidden_size=196,
-    ...     seq_length=10
-    ... )
-    >>> x = torch.randn(32, 6, 10)
-    >>> y = model(x)
-"""
-
 import torch
 import torch.nn as nn
 

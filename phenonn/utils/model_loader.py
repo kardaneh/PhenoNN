@@ -1,258 +1,278 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
-#
-# This work is licensed under the Creative Commons
-# Attribution-NonCommercial-ShareAlike 4.0 International License.
-# To view a copy of this license, visit
-# http://creativecommons.org/licenses/by-nc-sa/4.0/
-
 """
-Phenonn Model Loader
+Build the trainable model from a CLI args namespace.
 
-Factory module for instantiating deep learning models.
+Two factories:
+  - `build_model(args)`       : base model + Every10DaysWrapper  → (B, 1, 36)
+  - `build_model_pft(args, norm_stats)` : base model with 15 output channels
+                                + PFTMixingWrapper → (B, 1, 36)
 
-This module provides a unified interface to build different neural
-network architectures (RNNs, Transformers, FCNs, and linear baselines)
-and automatically wraps them to ensure consistent output formatting
-for training and evaluation pipelines.
-
-Design
-------
-All models are constructed as base networks and then wrapped using
-lightweight adapters that enforce consistent output shapes:
-
-- SingleDayWrapper:
-    Ensures output shape (batch, 1) for standard single-day prediction.
-
-- LastNDaysWrapper:
-    Returns predictions over multiple target days (used in gradient loss
-    or full-sequence forecasting).
-
-- permuteWrapper:
-    Handles tensor dimension reordering for transformer-based models.
-
-- Special cases:
-    Some models (e.g. linear baselines) are returned without wrapping
-    because they already produce correctly shaped outputs.
-
-Supported models
------------------
-- RNN-based models:
-    - LSTM (RNN_LSTM)
-    - GRU (RNN_GRU)
-    - 1-year LSTM variant (sequence-to-sequence style)
-
-- Transformer models:
-    - Encoder-only Transformer (EncoderTorch)
-    - BiTransformer variants
-    - Combined Transformer-RNN hybrid (transformerbis)
-
-- Feed-forward models:
-    - FCN (Fully Connected Network)
-
-- Linear baselines:
-    - LinearBaseline
-    - PerDayLinearBaseline
-
-Wrapper logic
--------------
-The final wrapper depends on training configuration:
-
-- args.n_target_days > 1:
-    → LastNDaysWrapper is used (multi-day regression / gradient loss)
-
-- otherwise:
-    → SingleDayWrapper is used (standard single-step prediction)
-
-Special cases:
-- 1-year models automatically return LastNDaysWrapper(365)
-
-Parameters
-----------
-args : argparse.Namespace or EasyDict
-    Configuration object containing at least:
-
-    type : str
-        Model type identifier (e.g., 'lstm', 'transformer', 'fcn').
-    feature_channel : int
-        Number of input features (meteorology + cyclic + static + PFT).
-    output_channel : int
-        Number of output targets (typically 1 for LAI/GCC).
-    seq_length : int
-        Input sequence length (e.g., 365 days).
-
-    Plus architecture-specific hyperparameters:
-        hidden_size, num_layers, embed_size, nhead, dropout, etc.
-
-Returns
--------
-nn.Module
-    Wrapped model ready for training. Output shape depends on wrapper:
-
-    - (batch, 1) for SingleDayWrapper
-    - (batch, n_target_days) for LastNDaysWrapper
-
-Raises
-------
-ValueError
-    If `args.type` does not match any supported architecture.
-
-Notes
------
-- This module standardizes heterogeneous architectures under a single
-  training interface.
-- Wrapping ensures compatibility with loss functions and dataset outputs.
-- Transformer-based models may internally permute tensor dimensions
-  using `permuteWrapper`.
-
-See Also
---------
-phenonn.models.rnn.RNN_LSTM
-phenonn.models.rnn.RNN_GRU
-phenonn.models.transformer.EncoderTorch
-phenonn.models.fcn.FCN
-phenonn.models.linear_baseline.LinearBaseline
+Both end up with the same output shape so the rest of the pipeline (loss,
+train loop, validation) is identical regardless of the mixing mode.
 """
 
+import torch.nn as nn
+
+from phenonn.utils.config import FEATURE_CHANNELS, N_PFT, PFT_START
 from phenonn.models.rnn import RNN_LSTM, RNN_GRU
-from phenonn.models.transformer import EncoderTorch
-from phenonn.models.linear_baseline import LinearBaseline, PerDayLinearBaseline
+from phenonn.models.transformer import EncoderTorch, CausalSparseTransformer
+from phenonn.models.transformerbis import BiTransformer
+from phenonn.models.bitransformer import BiTransformerV2
+from phenonn.models.attn_lstm import AttnLSTM
+from phenonn.models.aelstm import AELSTM
 from phenonn.models.fcn import FCN
-from phenonn.models.transformerbis import CombinedModel, BiTransformer
-from .wrappers import SingleDayWrapper, permuteWrapper, LastNDaysWrapper
+from phenonn.models.linear_baseline import LinearBaseline, PerDayLinearBaseline
+from phenonn.utils.wrappers import (
+    DailyWrapper, Every10DaysWrapper, PFTMixingWrapper, permuteWrapper,
+)
 
 
-def load_model(args):
+def _resolve_d_model(args) -> int:
+    """Transformer embedding dim for bitransformer_v2 / attnlstm stage-1:
+    --d_model, falling back to --hidden_size when unset (also covers old
+    checkpoints saved before --d_model existed)."""
+    return getattr(args, "d_model", None) or args.hidden_size
+
+
+def _ff1(args) -> int:
+    """Stage-1 FFN multiplier: --feed_forward_trans1, falling back to the old
+    --feed_forward_trans name (old checkpoints)."""
+    v = getattr(args, "feed_forward_trans1", None)
+    return v if v is not None else getattr(args, "feed_forward_trans", 4)
+
+
+def _ff2(args) -> int:
+    """Stage-2 FFN multiplier: --feed_forward_trans2, falling back to the old
+    --feed_forward_encoder name (old checkpoints)."""
+    v = getattr(args, "feed_forward_trans2", None)
+    return v if v is not None else getattr(args, "feed_forward_encoder", 4)
+
+
+def _nl1(args) -> int:
+    """Stage-1 transformer layer count: --num_layers1, falling back to the old
+    --bitrans_stage1_layers name (old checkpoints)."""
+    v = getattr(args, "num_layers1", None)
+    return v if v is not None else getattr(args, "bitrans_stage1_layers", 2)
+
+
+def _do1(args) -> float:
+    """Stage-1 (transformer) dropout: --dropout1, falling back to the old
+    --dropout_trans name (old checkpoints)."""
+    v = getattr(args, "dropout1", None)
+    return v if v is not None else getattr(args, "dropout_trans", 0.0)
+
+
+def _do2(args) -> float:
+    """Generic / stage-2 dropout: --dropout2, falling back to the old
+    --dropout name (old checkpoints)."""
+    v = getattr(args, "dropout2", None)
+    return v if v is not None else getattr(args, "dropout", 0.0)
+
+
+# ── Standard (single-output) factory ────────────────────────────────────────
+
+
+def build_model(args) -> nn.Module:
     """
-    Instantiate and wrap a model for single-day GCC prediction.
-
-    Parameters
-    ----------
-    args : argparse.Namespace or EasyDict
-        Must contain at minimum:
-
-            type : str
-                One of 'lstm', 'gru', 'transformer', 'fcn', 'fullyconnected'.
-            feature_channel : int
-                Number of input feature channels (meteo + cyclic + static + PFT).
-            output_channel : int
-                Number of output channels (1 for gcc_lowess).
-            seq_length : int
-                Window length (365).
-
-        Plus architecture-specific parameters (see original model_loader).
-
-    Returns
-    -------
-    SingleDayWrapper
-        Model whose forward returns (batch, output_channel).
+    Build a base model with output_channel=1 and wrap it so the final shape
+    is (B, 1, 36). Used when --pft_mixing is OFF.
     """
-    model_type = args.type.lower()
+    t = args.type.lower()
 
-    # ── Linear baselines (no wrapper needed, already output (B, 1)) ──
-
-    if model_type == "linear":
+    if t == "linear":
         return LinearBaseline(
-            feature_channel=args.feature_channel,
+            feature_channel=FEATURE_CHANNELS,
             seq_length=args.seq_length,
         )
+    if t == "linear_perday":
+        return PerDayLinearBaseline(feature_channel=FEATURE_CHANNELS)
 
-    if model_type == "linear_perday":
-        return PerDayLinearBaseline(
-            feature_channel=args.feature_channel,
+    if t == "lstm":
+        base = RNN_LSTM(
+            feature_channel=FEATURE_CHANNELS, output_channel=1,
+            hidden_size=args.hidden_size, num_layers=args.num_layers,
         )
-
-    if model_type in ["lstm", "gru"]:
-        model_class = RNN_LSTM if model_type == "lstm" else RNN_GRU
-        base_model = model_class(
-            feature_channel=args.feature_channel,
-            output_channel=args.output_channel,
-            hidden_size=args.hidden_size,
-            num_layers=args.num_layers,
+    elif t == "gru":
+        base = RNN_GRU(
+            feature_channel=FEATURE_CHANNELS, output_channel=1,
+            hidden_size=args.hidden_size, num_layers=args.num_layers,
         )
-
-    elif model_type == "1year_lstm":
-        base_model = RNN_LSTM(
-            feature_channel=args.feature_channel,
-            output_channel=args.output_channel,
-            hidden_size=args.hidden_size,
-            num_layers=args.num_layers,
+    elif t == "transformer":
+        base = EncoderTorch(
+            feature_channel=FEATURE_CHANNELS, output_channel=1,
+            embed_size=args.embed_size, num_layers=args.num_layers,
+            heads=args.nhead, forward_expansion=args.forward_expansion,
+            seq_length=args.seq_length, dropout=_do2(args), causal=False,
         )
-        return LastNDaysWrapper(base_model, n_days=365)
-
-    elif model_type == "transformer":
-        base_model = EncoderTorch(
-            feature_channel=args.feature_channel,
-            output_channel=args.output_channel,
-            embed_size=args.embed_size,
-            num_layers=args.num_layers,
-            heads=args.nhead,
-            forward_expansion=getattr(args, "forward_expansion", 4) or 4,
+    elif t == "bitransformer":
+        base = permuteWrapper(BiTransformer(
+            input_dim=FEATURE_CHANNELS, d_model=args.hidden_size,
+            feed_forward_trans=_ff1(args),
+            feed_forward_encoder=_ff2(args),
+            output_dim=1, nr_blocks=args.num_layers,
+            dropout_trans=_do1(args), dropout_encoder=_do2(args),
+            n_pft=N_PFT,
+        ))
+    elif t == "aelstm":
+        base = AELSTM(
+            feature_channel=FEATURE_CHANNELS, output_channel=1,
+            hidden_size=args.hidden_size, num_layers=args.num_layers,
+            n_attn_blocks=args.n_attn_blocks, nhead=args.nhead,
+            ff_expansion=args.forward_expansion,
+            dropout=_do2(args), dropout_att=args.dropout_att,
             seq_length=args.seq_length,
-            dropout=args.dropout,
-            causal=False,
         )
-
-    elif model_type == "transformerbis":
-        base_model = permuteWrapper(
-            CombinedModel(
-                input_dim=args.feature_channel,
-                hidden_dim=args.hidden_size,
-                hidden_dim_trans=args.hidden_size,
-                output_dim=args.output_channel,
-                d_model=32,
-                nr_blocks=3,
-                n_pft=10,
-            )
+    elif t == "transformer_dec":
+        # CausalSparseTransformer outputs (B, 1, 36) directly — bypass wrapper
+        return CausalSparseTransformer(
+            feature_channel=FEATURE_CHANNELS, output_channel=1,
+            d_model=args.hidden_size, n_heads=args.nhead,
+            e_layers=args.num_layers, d_layers=args.d_layers,
+            d_ff=args.forward_expansion * args.hidden_size,
+            seq_length=args.seq_length, dropout=_do2(args),
+            causal=True, num_obs_days=36,
         )
-
-    elif model_type == "bitransformer":
-        base_model = permuteWrapper(
-            BiTransformer(
-                input_dim=args.feature_channel,
-                hidden_dim=args.hidden_size,
-                hidden_dim_trans=args.hidden_size,
-                output_dim=args.output_channel,
-                d_model=32,
-                nr_blocks=3,
-                n_pft=3,
-            )
+    elif t == "bitransformer_v2":
+        base = permuteWrapper(BiTransformerV2(
+            input_dim=FEATURE_CHANNELS, output_dim=1,
+            d_model=_resolve_d_model(args), d_model2=args.hidden_size,
+            n_pft=N_PFT,
+            stress_dim=args.stress_dim,
+            nr_blocks_stage1=_nl1(args),
+            nr_blocks_stage2=args.num_layers,
+            nhead=args.nhead,
+            feed_forward_trans=_ff1(args),
+            feed_forward_encoder=_ff2(args),
+            dropout_trans=_do1(args), dropout_encoder=_do2(args),
+            seq_length=args.seq_length, causal=True,
+        ))
+    elif t == "attnlstm":
+        base = permuteWrapper(AttnLSTM(
+            input_dim=FEATURE_CHANNELS, output_dim=1,
+            d_model=_resolve_d_model(args), lstm_hidden=args.hidden_size,
+            n_pft=N_PFT,
+            stress_dim=args.stress_dim,
+            nr_blocks_stage1=_nl1(args),
+            lstm_layers=args.num_layers,
+            nhead=args.nhead,
+            feed_forward_trans=_ff1(args),
+            dropout_trans=_do1(args), dropout_lstm=_do2(args),
+            seq_length=args.seq_length, causal=True,
+        ))
+    elif t in ("fcn", "fullyconnected"):
+        base = FCN(
+            feature_channel=FEATURE_CHANNELS, output_channel=1,
+            num_layers=args.num_layers, hidden_size=args.hidden_size,
+            seq_length=args.seq_length, dim_expand=0,
         )
-
-    elif model_type == "1year_bitransformer":
-        base_model = permuteWrapper(
-            BiTransformer(
-                input_dim=args.feature_channel,
-                d_model=args.hidden_size,
-                feed_forward_trans=args.feed_forward_trans,
-                feed_forward_encoder=args.feed_forward_encoder,
-                output_dim=args.output_channel,
-                nr_blocks=args.num_layers,
-                dropout_trans=args.dropout_trans,
-                dropout_encoder=args.dropout,
-                n_pft=9,
-            )
-        )
-        return LastNDaysWrapper(base_model, n_days=365)
-
-    elif model_type in ["fcn", "fullyconnected"]:
-        base_model = FCN(
-            feature_channel=args.feature_channel,
-            output_channel=args.output_channel,
-            num_layers=args.num_layers,
-            hidden_size=args.hidden_size,
-            seq_length=args.seq_length,
-            dim_expand=0,
-        )
-
     else:
-        raise ValueError(f"Model type '{args.type}' is not implemented.")
+        raise ValueError(f"Unsupported model type: {args.type}")
 
-    # Choose wrapper based on training mode:
-    #   n_target_days > 1 → LastNDaysWrapper (gradient loss, output last N days)
-    #   otherwise         → SingleDayWrapper (standard, output last day only)
-    n_target = getattr(args, "n_target_days", 1)
-    if n_target > 1:
-        return LastNDaysWrapper(base_model, n_days=n_target)
+    if getattr(args, "daily_lai", False):
+        return DailyWrapper(base)                 # (B, 1, 365) — daily target
+    return Every10DaysWrapper(base)
 
-    return SingleDayWrapper(base_model)
+
+# ── PFT-decomposed factory ──────────────────────────────────────────────────
+
+
+def build_model_pft(args, norm_stats) -> nn.Module:
+    """
+    Build a base model with output_channel=N_PFT (= 15) and wrap it in
+    PFTMixingWrapper. Identical to LaiNN/phenocam/main_bis.build_model_pft.
+
+    With `args.pft_meteo_only`, the base model sees ONLY the meteo/cyclic/co2
+    channels (feature_channel=PFT_START, no trailing PFT input): each pure-LAI
+    output L_k then depends on climate alone, and the PFT fractions enter only
+    as mixing weights inside PFTMixingWrapper. For the BiTransformers this means
+    n_pft=0 (no PFT concat in their conditioning stage).
+    """
+    t = args.type.lower()
+    meteo_only = bool(getattr(args, "pft_meteo_only", False))
+    nonneg = bool(getattr(args, "pft_nonneg", False))
+    base_channels = PFT_START if meteo_only else FEATURE_CHANNELS
+    n_pft_in = 0 if meteo_only else N_PFT     # trailing PFT channels the base sees
+
+    if t == "lstm":
+        base = RNN_LSTM(
+            feature_channel=base_channels, output_channel=N_PFT,
+            hidden_size=args.hidden_size, num_layers=args.num_layers,
+        )
+    elif t == "gru":
+        base = RNN_GRU(
+            feature_channel=base_channels, output_channel=N_PFT,
+            hidden_size=args.hidden_size, num_layers=args.num_layers,
+        )
+    elif t == "transformer":
+        base = EncoderTorch(
+            feature_channel=base_channels, output_channel=N_PFT,
+            embed_size=args.embed_size, num_layers=args.num_layers,
+            heads=args.nhead, forward_expansion=args.forward_expansion,
+            seq_length=args.seq_length, dropout=_do2(args), causal=False,
+        )
+    elif t == "bitransformer":
+        base = permuteWrapper(BiTransformer(
+            input_dim=base_channels, d_model=args.hidden_size,
+            feed_forward_trans=_ff1(args),
+            feed_forward_encoder=_ff2(args),
+            output_dim=N_PFT, nr_blocks=args.num_layers,
+            dropout_trans=_do1(args), dropout_encoder=_do2(args),
+            n_pft=n_pft_in,
+        ))
+    elif t == "aelstm":
+        base = AELSTM(
+            feature_channel=base_channels, output_channel=N_PFT,
+            hidden_size=args.hidden_size, num_layers=args.num_layers,
+            n_attn_blocks=args.n_attn_blocks, nhead=args.nhead,
+            ff_expansion=args.forward_expansion,
+            dropout=_do2(args), dropout_att=args.dropout_att,
+            seq_length=args.seq_length,
+        )
+    elif t == "transformer_dec":
+        base = CausalSparseTransformer(
+            feature_channel=base_channels, output_channel=N_PFT,
+            d_model=args.hidden_size, n_heads=args.nhead,
+            e_layers=args.num_layers, d_layers=args.d_layers,
+            d_ff=args.forward_expansion * args.hidden_size,
+            seq_length=args.seq_length, dropout=_do2(args),
+            causal=True, num_obs_days=36,
+        )
+        return PFTMixingWrapper(
+            base, norm_stats, sparse_output=True, meteo_only=meteo_only,
+            nonneg=nonneg,
+            lai_normalized=getattr(args, "normalize_lai", True),
+        )
+    elif t == "bitransformer_v2":
+        base = permuteWrapper(BiTransformerV2(
+            input_dim=base_channels, output_dim=N_PFT,
+            d_model=_resolve_d_model(args), d_model2=args.hidden_size,
+            n_pft=n_pft_in,
+            stress_dim=args.stress_dim,
+            nr_blocks_stage1=_nl1(args),
+            nr_blocks_stage2=args.num_layers,
+            nhead=args.nhead,
+            feed_forward_trans=_ff1(args),
+            feed_forward_encoder=_ff2(args),
+            dropout_trans=_do1(args), dropout_encoder=_do2(args),
+            seq_length=args.seq_length, causal=True,
+        ))
+    elif t == "attnlstm":
+        base = permuteWrapper(AttnLSTM(
+            input_dim=base_channels, output_dim=N_PFT,
+            d_model=_resolve_d_model(args), lstm_hidden=args.hidden_size,
+            n_pft=n_pft_in,
+            stress_dim=args.stress_dim,
+            nr_blocks_stage1=_nl1(args),
+            lstm_layers=args.num_layers,
+            nhead=args.nhead,
+            feed_forward_trans=_ff1(args),
+            dropout_trans=_do1(args), dropout_lstm=_do2(args),
+            seq_length=args.seq_length, causal=True,
+        ))
+    else:
+        raise ValueError(f"Unsupported model type for PFT mixing: {args.type}")
+
+    return PFTMixingWrapper(
+        base, norm_stats, meteo_only=meteo_only, nonneg=nonneg,
+        lai_normalized=getattr(args, "normalize_lai", True),
+        daily=getattr(args, "daily_lai", False),
+    )

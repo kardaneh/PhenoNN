@@ -1,65 +1,16 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors:
+# Linear regression baseline for LAI prediction.
 #
-# This work is licensed under the Creative Commons
-# Attribution-NonCommercial-ShareAlike 4.0 International License.
-# To view a copy of this license, visit
-# http://creativecommons.org/licenses/by-nc-sa/4.0/
-
-"""
-Linear regression baselines for LAI prediction.
-
-This module provides simple linear models that serve as reference baselines
-for evaluating more complex neural network architectures. Both models map
-meteorological feature sequences to a single LAI prediction while maintaining
-the same input/output interface as the project's single-day prediction models.
-
-Implemented Models
-------------------
-LinearBaseline
-    A full-window linear regression model that flattens the entire input
-    sequence and applies a single fully connected layer. Each feature at
-    each timestep receives an independent weight, allowing the model to
-    learn temporally specific linear relationships.
-
-    Mathematically:
-
-        y = w^T x + b
-
-    where ``x`` is the flattened ``(C × L)`` feature window.
-
-    This model is equivalent to ordinary least squares regression over all
-    feature–time combinations and provides a strong linear benchmark.
-
-PerDayLinearBaseline
-    A per-timestep linear model that ignores temporal history. The model
-    applies a shared linear mapping from features to LAI and returns the
-    prediction associated with the final timestep of the input sequence.
-
-    This baseline evaluates how much predictive information is contained
-    in the current day's meteorological conditions alone. Strong performance
-    indicates that temporal context contributes little beyond instantaneous
-    feature values.
-
-Input and Output Conventions
-----------------------------
-Both models follow the project's single-day prediction interface:
-
-Input:
-    Tensor of shape ``(batch_size, feature_channels, sequence_length)``.
-
-Output:
-    Tensor of shape ``(batch_size, 1)``.
-
-Notes
------
-* Neither model contains hidden layers, nonlinear activations, recurrence,
-  attention mechanisms, or convolutional operations.
-* The models are intentionally simple and interpretable, making them useful
-  as lower-bound performance baselines.
-* Performance gains achieved by more sophisticated architectures can be
-  interpreted relative to these linear reference models.
-"""
+# Two variants:
+#   - LinearBaseline: flattens the full (C, L) window and applies a single
+#     Linear layer. This is equivalent to ordinary least squares regression
+#     on all C×L input values. No hidden layers, no activation, no nonlinearity.
+#
+#   - PerDayLinearBaseline: applies a Linear(C, 1) independently to each
+#     timestep, then takes the last day's output. This tests whether a
+#     simple per-day linear combination of the 16 features (without any
+#     temporal context) can predict LAI.
+#
+# Both follow the SingleDayWrapper convention: input (B, C, L) → output (B, 1).
 
 import torch
 import torch.nn as nn
@@ -157,6 +108,6 @@ class PerDayLinearBaseline(nn.Module):
         (batch, 1)
         """
         # Permute to (B, L, C), take last day, apply linear
-        x = x.permute(0, 2, 1)  # (B, L, C)
-        last_day = x[:, -1, :]  # (B, C)
+        x = x.permute(0, 2, 1)   # (B, L, C)
+        last_day = x[:, -1, :]   # (B, C)
         return self.linear(last_day)
