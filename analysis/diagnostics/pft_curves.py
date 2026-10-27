@@ -38,6 +38,7 @@ import datetime
 import os
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 import matplotlib
@@ -146,6 +147,24 @@ def parse_args():
     )
     p.add_argument("--ncols", type=int, default=3)
     p.add_argument("--output", default="runs/pft_curves.png")
+    p.add_argument(
+        "--output_csv",
+        default="",
+        help="Per-PFT CSV (default: the --output path with .csv).",
+    )
+    p.add_argument(
+        "--site_selection",
+        default="random",
+        choices=["random", "mixed", "pure"],
+        help="'mixed' picks sites whose dominant PFT fraction is closest to "
+        "--mixed_target; 'pure' picks the most mono-specific sites.",
+    )
+    p.add_argument(
+        "--mixed_target",
+        type=float,
+        default=0.5,
+        help="Target dominant-PFT fraction for --site_selection mixed.",
+    )
     return p.parse_args()
 
 
@@ -223,8 +242,27 @@ def main():
                     "No val_site_ids in checkpoint; pass --sites or "
                     "--selected_pixels."
                 )
-        n = min(args.n_sites, len(pool))
-        site_ids = rng.choice(pool, size=n, replace=False).tolist()
+        pool = list(pool)
+        if args.site_selection != "random":
+            from phenonn.evaluation.bundle import _read_pft_year
+
+            fracs = _read_pft_year(pft_dir, years[0], pool)
+            if not fracs:
+                raise ValueError(
+                    "PFT fractions unavailable; cannot rank sites for "
+                    "--site_selection. Use --site_selection random."
+                )
+            purity = {s: float(np.max(f)) for s, f in fracs.items() if f.size}
+            if args.site_selection == "pure":
+                ranked = sorted(purity, key=lambda s: -purity[s])
+            else:
+                ranked = sorted(
+                    purity, key=lambda s: abs(purity[s] - args.mixed_target)
+                )
+            site_ids = ranked[: min(args.n_sites, len(ranked))]
+        else:
+            n = min(args.n_sites, len(pool))
+            site_ids = rng.choice(pool, size=n, replace=False).tolist()
     print(f"Sites       : {len(site_ids)}  |  years: {years}")
 
     # ── Dataset (pixelset, RAM) ──
@@ -255,43 +293,71 @@ def main():
     else:
         lai_mean, lai_std = 0.0, 1.0
 
-    # ── Inference: replicate PFTMixingWrapper to expose the 15 pure-LAI channels ──
+    # ── Inference: expose the 15 pure-LAI channels ──
     with torch.no_grad():
         features, targets = next(iter(loader))
         features = features.to(device)
 
-        # In meteo_only mode the base model was built to see only the meteo/
-        # cyclic/co2 channels; strip the PFT block exactly like the wrapper does.
-        base_in = (
-            features[:, : model.pft_start, :]
-            if getattr(model, "meteo_only", False)
-            else features
-        )
-        raw = model.base_model(base_in)  # (B, 15, L)
-        if getattr(model, "nonneg", False):
-            # Mirror the wrapper's soft floor so the shown pure LAI matches the
-            # values the model actually mixes.
-            raw = model.nonneg_z0 + torch.nn.functional.softplus(raw - model.nonneg_z0)
-        if getattr(model, "sparse_output", False):
-            lai_pure_norm = raw  # (B, 15, 36)
-        else:
-            lai_pure_norm = raw[:, :, -365:][:, :, model.obs_positions]
-        # Mirror the wrapper's per-PFT override (PFT-1 bare soil → 0).
-        lai_pure_norm = lai_pure_norm * model.lai_pft_mask + model.lai_pft_bias
-
-        lai_pred_norm = model(features)  # (B, 1, 36)
+        if hasattr(model, "forward_with_pure"):
+            lai_pred_norm, lai_pure_norm, pft_real_t = model.forward_with_pure(
+                features
+            )
+            if getattr(model, "daily", False) and lai_pure_norm.shape[-1] == 365:
+                pos = model.obs_positions
+                lai_pure_norm = lai_pure_norm[:, :, pos]
+                lai_pred_norm = lai_pred_norm[:, :, pos]
+            pft_real = pft_real_t.cpu().numpy().squeeze(-1)
+        else:  # legacy wrapper without forward_with_pure
+            base_in = (
+                features[:, : model.pft_start, :]
+                if getattr(model, "meteo_only", False)
+                else features
+            )
+            raw = model.base_model(base_in)  # (B, 15, L)
+            if getattr(model, "nonneg", False):
+                raw = model.nonneg_z0 + torch.nn.functional.softplus(
+                    raw - model.nonneg_z0
+                )
+            if getattr(model, "sparse_output", False):
+                lai_pure_norm = raw  # (B, 15, 36)
+            else:
+                lai_pure_norm = raw[:, :, -365:][:, :, model.obs_positions]
+            lai_pure_norm = lai_pure_norm * model.lai_pft_mask + model.lai_pft_bias
+            lai_pred_norm = model(features)  # (B, 1, 36)
+            pf0 = int(model.pft_start)
+            pft_means = model.pft_means.cpu().numpy().reshape(1, N_PFT)
+            pft_stds = model.pft_stds.cpu().numpy().reshape(1, N_PFT)
+            pft_norm = features[:, pf0 : pf0 + N_PFT, -1].cpu().numpy()
+            pft_real = np.clip(pft_norm * pft_stds + pft_means, 0.0, None)
+            pft_real = pft_real / pft_real.sum(axis=1, keepdims=True).clip(1e-6)
 
     lai_pure_real = lai_pure_norm.cpu().numpy() * lai_std + lai_mean  # (B,15,36)
     lai_pred_real = (lai_pred_norm.cpu().numpy() * lai_std + lai_mean).squeeze(1)
     lai_obs_real = (targets.numpy() * lai_std + lai_mean).squeeze(1)
 
-    # PFT physical fractions — recovered exactly as the wrapper does.
-    pf0 = int(model.pft_start)
-    pft_means = model.pft_means.cpu().numpy().reshape(1, N_PFT)
-    pft_stds = model.pft_stds.cpu().numpy().reshape(1, N_PFT)
-    pft_norm = features[:, pf0 : pf0 + N_PFT, -1].cpu().numpy()
-    pft_real = np.clip(pft_norm * pft_stds + pft_means, 0.0, None)
-    pft_real = pft_real / pft_real.sum(axis=1, keepdims=True).clip(1e-6)
+    # ── Per-PFT CSV (long format) ──
+    csv_path = args.output_csv or (os.path.splitext(args.output)[0] + ".csv")
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    rows = []
+    for i in range(len(ds)):
+        meta = ds.get_site_info(i)
+        for k in range(N_PFT):
+            for j, doy in enumerate(_OBS_DOYS):
+                rows.append(
+                    {
+                        "site_id": meta["site_id"],
+                        "year": meta["year"],
+                        "doy": int(doy),
+                        "pft": k,
+                        "pft_name": PFT_NAMES[k],
+                        "frac": float(pft_real[i, k]),
+                        "lai_pure": float(lai_pure_real[i, k, j]),
+                        "lai_pred": float(lai_pred_real[i, j]),
+                        "lai_obs": float(lai_obs_real[i, j]),
+                    }
+                )
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    print(f"Per-PFT CSV → {csv_path}")
 
     # ── Plot ──
     n_samples = len(ds)

@@ -96,10 +96,40 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
+        "--hemisphere",
+        default="auto",
+        choices=["auto", "north", "south"],
+        help="Season convention. 'auto' shifts the window per sample using "
+        "the site latitude (recommended for global runs).",
+    )
+    p.add_argument(
         "--output_dir",
         default="runs/perturbation",
         help="Results go to <output_dir>/<scenario>/.",
     )
+
+
+def load_site_latitudes(pft_dir: str, year: int, site_ids) -> dict:
+    """Return ``{site_id: latitude}`` from ``PFTmap_{year}.nc``.
+
+    The pixelset PFT files carry per-site ``latitude`` / ``longitude``
+    coordinates, so the perturbation study can pick the correct hemisphere
+    without a second metadata file.
+    """
+    import numpy as np
+
+    path = os.path.join(pft_dir, f"PFTmap_{int(year)}.nc")
+    if not os.path.exists(path):
+        return {}
+    import xarray as xr
+
+    with xr.open_dataset(path, engine="netcdf4", decode_times=False) as ds:
+        if "latitude" not in ds.coords and "latitude" not in ds.variables:
+            return {}
+        sites = np.asarray(ds["site_id"].values).astype(str)
+        lats = np.asarray(ds["latitude"].values).astype(float)
+    idx = {s: i for i, s in enumerate(sites)}
+    return {str(s): float(lats[idx[s]]) for s in site_ids if str(s) in idx}
 
 
 def load_model_and_data(args):
@@ -230,6 +260,21 @@ def load_model_and_data(args):
         dataset, batch_size=args.batch_size, shuffle=False, num_workers=0
     )
 
+    # Per-sample latitude for hemisphere-aware season windows.
+    lat_map = load_site_latitudes(pft_dir, years[0], site_ids)
+    lat_by_sample = np.array(
+        [
+            lat_map.get(dataset.get_site_info(i)["site_id"], 0.0)
+            for i in range(len(dataset))
+        ],
+        dtype=np.float32,
+    )
+    if lat_map:
+        print(
+            f"Latitudes     : {len(lat_map):,} sites "
+            f"({np.mean(lat_by_sample < 0) * 100:.0f}% southern hemisphere)"
+        )
+
     return EasyDict(
         {
             "device": device,
@@ -243,6 +288,8 @@ def load_model_and_data(args):
             "is_normalized": is_normalized,
             "ablate_hook": ablate_hook,
             "ablate_feats": abl_feats,
+            "ablate_ch": abl_ch if abl_feats else [],
+            "lat_by_sample": lat_by_sample,
             "is_daily": bool(train_args.get("daily_lai", False)),
         }
     )
@@ -270,6 +317,39 @@ def _infer(model, loader, device) -> np.ndarray:
         for features, _targets in loader:
             preds = model(features.to(device)).cpu().numpy()  # (B, 1, 36)
             out.append(preds[:, 0, :])
+    return np.concatenate(out, axis=0)
+
+
+def _infer_perturbed(
+    model,
+    loader,
+    perturbation,
+    lats,
+    device,
+    ablate_ch=None,
+) -> np.ndarray:
+    """Run one perturbed inference pass, optionally hemisphere-aware.
+
+    Unlike a forward hook, this path knows the per-sample latitude, which is
+    required for the ``hemisphere="auto"`` season convention on a global
+    dataset.  The ablation channels are zeroed after the perturbation so the
+    order matches training-time feature ablation.
+    """
+    out = []
+    start = 0
+    with torch.no_grad():
+        for features, _targets in loader:
+            b = features.size(0)
+            x = features.to(device)
+            batch_lats = None if lats is None else lats[start : start + b]
+            x = perturbation.apply(x, lats=batch_lats)
+            if ablate_ch:
+                x = x.clone()
+                for c in ablate_ch:
+                    x[:, c, :] = 0.0
+            preds = model(x).cpu().numpy()  # (B, 1, 36)
+            out.append(preds[:, 0, :])
+            start += b
     return np.concatenate(out, axis=0)
 
 
@@ -345,14 +425,14 @@ def run(args, make_perturbation, scenario: str, description: str = "") -> None:
             h_abl.remove()
 
     print("Perturbed inference ...")
-    handles = [ctx.model.register_forward_pre_hook(perturbation.hook)]
-    if ctx.ablate_hook is not None:
-        handles.append(ctx.model.register_forward_pre_hook(ctx.ablate_hook))
-    try:
-        pert_raw = _infer(ctx.model, ctx.loader, ctx.device)
-    finally:
-        for h in handles:
-            h.remove()
+    pert_raw = _infer_perturbed(
+        ctx.model,
+        ctx.loader,
+        perturbation,
+        ctx.lat_by_sample,
+        ctx.device,
+        ablate_ch=ctx.ablate_ch,
+    )
 
     # A daily-trained model outputs 365 days -> sample the 36 dekad positions so
     # everything downstream (36-dekad tables, obs comparison) stays aligned.
