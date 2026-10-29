@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -43,12 +43,12 @@ Examples
 ::
 
     python -m phenonn.datagen.rebalance_pixels \\
-        --selected_pixels /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/selected_pixels005_1.nc \\
-        --pft_dir         /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/PFT_pixelset \\
+        --selected_pixels /path/to/data/pixelset1/selected_pixels005_1.nc \\
+        --pft_dir         /path/to/data/pixelset1/PFT_pixelset \\
         --pft_year 2010 \\
         --reduce_pft 2 \\
         --target_total 1000000 \\
-        --output          /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/selected_pixels005_balanced.nc \\
+        --output          /path/to/data/pixelset1/selected_pixels005_balanced.nc \\
         --seed 42
 """
 

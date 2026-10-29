@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -64,11 +64,11 @@ Examples
 ::
 
     python -m phenonn.datagen.pft_diagnostics \\
-        --selected_pixels /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/selected_pixels_10%_PFT/selected_pixels_10%_PFT_0.95/selected_pixels_10%_PFT1 \\
-        --era5_dir        /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/era5_pixelset \\
-        --target_dir      /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/LAI_pixelset \\
+        --selected_pixels /path/to/data/pixelset1/selected_pixels_10%_PFT/selected_pixels_10%_PFT_0.95/selected_pixels_10%_PFT1 \\
+        --era5_dir        /path/to/data/pixelset1/era5_pixelset \\
+        --target_dir      /path/to/data/pixelset1/LAI_pixelset \\
         --year_start 1992 --year_end 2018 \\
-        --output_dir /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/diag_plots/PFT1/
+        --output_dir /path/to/data/pixelset1/diag_plots/PFT1/
 """
 
 import argparse

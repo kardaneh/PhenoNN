@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -63,6 +63,54 @@ class TestCli(unittest.TestCase):
         """predict --help forwards to the predictor argparse."""
         res = _run("predict", "--help")
         self.assertEqual(res.returncode, 0)
+
+    def test_predict_n_curves_default(self):
+        """Prediction caps curve plots at 100 unless the user overrides it."""
+        from phenonn.prediction.args import parse_args
+
+        args = parse_args(["--checkpoint", "dummy"])
+        self.assertEqual(args.n_curves, 100)
+        self.assertTrue(getattr(args, "_n_curves_defaulted", False))
+
+        args = parse_args(["--checkpoint", "dummy", "--n_curves", "0"])
+        self.assertEqual(args.n_curves, 0)
+        self.assertFalse(getattr(args, "_n_curves_defaulted", False))
+
+    def test_import_is_lazy(self):
+        """Importing phenonn must not load torch on the CLI fast path."""
+        res = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import phenonn, sys; print('torch' in sys.modules)",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=60,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.strip(), "False")
+
+    def test_package_does_not_import_analysis(self):
+        """phenonn must stay importable without the analysis scripts."""
+        res = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import phenonn, sys; "
+                    "print(any(m == 'analysis' or m.startswith('analysis.') "
+                    "for m in sys.modules))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            timeout=60,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.strip(), "False")
 
 
 def run_tests():

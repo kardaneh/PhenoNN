@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -171,6 +171,7 @@ def test_model_factory(logger: Logger) -> bool:
         from types import SimpleNamespace
         from phenonn.utils.config import FEATURE_CHANNELS
         from phenonn.utils.model_loader import build_model
+
     except Exception as exc:  # noqa: BLE001
         logger.error(f"cannot import model_loader: {type(exc).__name__}: {exc}")
         return False
@@ -218,14 +219,21 @@ def test_cli(logger: Logger) -> bool:
     logger.start_task("CLI")
     ok = True
     for argv in (["--version"], ["--help"]):
+        command = [sys.executable, "-m", "phenonn", *argv]
+        logger.info(f"running: {' '.join(command)}")
         try:
             res = subprocess.run(
-                [sys.executable, "-m", "phenonn", *argv],
+                command,
                 capture_output=True,
                 text=True,
+                timeout=120,
             )
+        except subprocess.TimeoutExpired:
+            logger.error(f"timeout after 120 s: {' '.join(command)}")
+            ok = False
+            continue
         except Exception as exc:  # noqa: BLE001
-            logger.error(f"python -m phenonn {' '.join(argv)}: {exc}")
+            logger.error(f"{' '.join(command)}: {exc}")
             ok = False
             continue
         if res.returncode == 0:

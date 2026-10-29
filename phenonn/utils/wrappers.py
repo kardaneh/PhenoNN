@@ -275,6 +275,7 @@ class PFTMixingWrapper(nn.Module):
         meteo_only: bool = False,
         nonneg: bool = False,
         daily: bool = False,
+        return_pure: bool = False,
     ) -> None:
         super().__init__()
         self.base_model = base_model
@@ -282,6 +283,10 @@ class PFTMixingWrapper(nn.Module):
         self.n_pft = n_pft
         self.renormalize = renormalize
         self.sparse_output = sparse_output
+        # When True, ``forward`` returns ``(mixed, lai_pure, pft_real)`` so
+        # callers can inspect the per-PFT decomposition without replicating
+        # the wrapper.  ``forward_with_pure`` always returns that tuple.
+        self.return_pure = return_pure
         # When True, the mixed LAI is returned at EVERY day of the last year
         # (B, 1, 365) instead of the 36 dekad positions — daily-target training.
         self.daily = daily
@@ -337,7 +342,8 @@ class PFTMixingWrapper(nn.Module):
         self.register_buffer("pft_means", means)
         self.register_buffer("pft_stds", stds)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _forward_components(self, x: torch.Tensor):
+        """Return ``(mixed, lai_pure, pft_real)`` in the model's LAI space."""
         # In meteo_only mode the base model expects only the meteo/cyclic/co2
         # channels; the PFT block (read below for the weights) is stripped here.
         base_in = x[:, : self.pft_start, :] if self.meteo_only else x
@@ -364,4 +370,16 @@ class PFTMixingWrapper(nn.Module):
             tot = pft_real.sum(dim=1, keepdim=True).clamp(min=1e-6)
             pft_real = pft_real / tot
 
-        return (lai_pure * pft_real).sum(dim=1, keepdim=True)  # (B, 1, 36)
+        mixed = (lai_pure * pft_real).sum(dim=1, keepdim=True)  # (B, 1, 36)
+        return mixed, lai_pure, pft_real
+
+    def forward(self, x: torch.Tensor):
+        """Mixed LAI, or ``(mixed, lai_pure, pft_real)`` when ``return_pure``."""
+        mixed, lai_pure, pft_real = self._forward_components(x)
+        if self.return_pure:
+            return mixed, lai_pure, pft_real
+        return mixed
+
+    def forward_with_pure(self, x: torch.Tensor):
+        """Always return ``(mixed, lai_pure, pft_real)`` for diagnostics."""
+        return self._forward_components(x)

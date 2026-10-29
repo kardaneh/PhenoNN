@@ -1,4 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
+# Copyright 2026 CNRS
+# Authors: Esteban Carlin, Kazem Ardaneh, Stefan Barbu
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.

@@ -5,26 +5,22 @@ Nothing here is imported by the `phenonn` package, and none of it is installed
 with `pip`.
 
 The scripts read pixelset files and checkpoints, and write outputs under
-`runs/`. A full study can take minutes to hours. CI only runs the fast import
-and command-line tests in `tests/test_analysis.py` and the feature-ablation
-tests in `tests/test_feature_ablation.py`.
+`runs/`. A full study can take minutes to hours. CI runs the full unit suite,
+including the analysis import and command-line tests in
+`tests/test_analysis.py` and the feature-ablation tests in
+`tests/test_feature_ablation.py`.
 
 ## Before you start
 
-Run every command from the repository root. These examples use the HAL layout;
-change `DATA` and `RUNS_TARGET` for another machine.
+Run every command from the repository root. Set `DATA` to the pixelset folder
+for your machine.
 
 ```bash
-cd /home/ecarlin/PhenoNN
+cd /path/to/PhenoNN
 source .venv/bin/activate
 
-export DATA="$PWD/pixelset1"
-export RUNS="$PWD/runs"
-export RUNS_TARGET=/net/nfs/ssd1/ecarlin/phenonn/runs
-
-test -L "$RUNS" || { echo "runs/ is not a symlink; stop"; exit 1; }
-test "$(readlink -f "$RUNS")" = "$RUNS_TARGET" \
-    || { echo "runs/ points somewhere unexpected"; exit 1; }
+export DATA="${DATA:-$PWD/pixelset1}"
+export RUNS="${RUNS:-$PWD/runs}"
 
 export DATA
 export RUNS
@@ -84,7 +80,8 @@ The generated files are described in `diagnostics/README.md`.
 | Measure climate sensitivity | [Climate perturbation](perturbation/README.md) |
 | Test PFT linearity | [PFT linearity](pft_linearity/README.md) |
 | Compare year splits | [Year generalization](year_generalization/README.md) |
-| Read the memory-study plan | [Memory analysis](memory_analysis/README.md) |
+| Run the memory kernel (M1) | [Memory analysis](memory_analysis/README.md) |
+| Build paper figures F1–F13 | [Figures](figures/README.md) |
 | Submit cluster jobs | [Feature-ablation jobs](feature_ablation/jobs/README.md), [perturbation jobs](perturbation/jobs/README.md), [year-split jobs](year_generalization/jobs/README.md) |
 
 ## Common data notes
@@ -126,15 +123,15 @@ For the full study:
 ```bash
 export FA_ROOT="$RUNS/feature_ablation"
 
-OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=hal \
+OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=local \
     bash analysis/feature_ablation/jobs/submit_ablate.sh --study features
 
 .venv/bin/python -m analysis.feature_ablation.aggregate \
     --kind features --runs_dir "$FA_ROOT"
 ```
 
-On HAL the paper profile defaults to `SUBSET=0.25` and `PHENONN_MEM=120G`.
-Override with `SUBSET=...` or `PHENONN_MEM=...` when using larger nodes.
+The paper profile defaults to `SUBSET=0.25` and `PHENONN_MEM=120G`.
+Override with `SUBSET=...` or `PHENONN_MEM=...` for larger nodes.
 
 See `feature_ablation/README.md` for the full workflow, grouped and combo
 studies, and result interpretation.
@@ -238,8 +235,8 @@ export YEAR_SUBSET=0.25
     --prefix "" --output_dir "$YEAR_ROOT"
 ```
 
-On HAL, keep `YEAR_SUBSET=0.25` to fit the 120G nodes. Use `YEAR_SUBSET=0.5`
-on Leonardo or another large-memory system. See
+The paper profile keeps `YEAR_SUBSET=0.25`. Use `YEAR_SUBSET=0.5` on a
+large-memory system. See
 [year_generalization/README.md](year_generalization/README.md) for the full
 fixed model configuration, split definitions, and job submission. Job details
 are in

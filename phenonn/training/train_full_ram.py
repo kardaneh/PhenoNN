@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -67,7 +67,7 @@ Usage
         --num_epochs 30 --n_sites_per_epoch 1000 --n_years_per_epoch 5 ...
 """
 
-import argparse
+import csv
 import json
 import os
 import sys
@@ -99,6 +99,15 @@ from phenonn.utils.diagnostics import (
 )
 from phenonn.utils.logger import Logger
 from phenonn.utils.utils import EasyDict, FileUtils
+from phenonn.evaluation.leakage import (
+    normalise_protocol,
+    reconcile_resumed_clim_years,
+    validate_climatology_years,
+    validate_normalisation_years,
+    validate_split,
+)
+from phenonn.evaluation.reproducibility import collect_run_metadata, write_json
+from phenonn.training.args import parse_args
 
 
 # ── Shared container ────────────────────────────────────────────────────────
@@ -174,149 +183,6 @@ def _cli_explicit_args() -> set:
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
-
-
-def parse_args(argv=None):
-    """
-    Parse the command-line arguments.
-
-    Parameters
-    ----------
-    argv : list of str, optional
-        Argument vector. Defaults to ``sys.argv[1:]``.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments.
-    """
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
-    # ── Data ──
-    p.add_argument("--features_dir", default="")
-    p.add_argument("--target_dir", default="")
-    p.add_argument("--pft_dir", default="")
-    p.add_argument("--valid_dir", default="")
-    p.add_argument("--selected_pixels", default="")
-    p.add_argument("--parent_map", default="")
-    p.add_argument("--stats_path", default="")
-    p.add_argument("--co2_path", default="")
-    p.add_argument(
-        "--no_normalize_lai",
-        dest="normalize_lai",
-        action="store_false",
-        default=True,
-    )
-    p.add_argument("--daily_lai", action="store_true", default=False)
-    p.add_argument("--daily_target_dir", default="")
-    p.add_argument(
-        "--threaded_feature_read",
-        action="store_true",
-        default=False,
-    )
-
-    # ── Sub-grid ──
-    p.add_argument("--row_min", type=int, default=0)
-    p.add_argument("--row_max", type=int, default=-1)
-    p.add_argument("--col_min", type=int, default=0)
-    p.add_argument("--col_max", type=int, default=-1)
-
-    # ── Years ──
-    p.add_argument("--train_years", default="")
-    p.add_argument("--val_years", default="")
-
-    # ── Per-epoch sampling ──
-    p.add_argument("--n_sites_per_epoch", type=int, default=500)
-    p.add_argument("--n_years_per_epoch", type=int, default=3)
-    p.add_argument("--n_val_sites", type=int, default=200)
-    p.add_argument("--val_fraction_of_grid", type=float, default=0.1)
-    p.add_argument("--subset", type=float, default=1.0)
-
-    # ── Anomaly mode ──
-    p.add_argument("--anomaly_mode", action="store_true")
-    p.add_argument("--clim_years", default="1992-2010")
-    p.add_argument("--clim_target_dir", default="")
-
-    # ── Model ──
-    p.add_argument(
-        "--type",
-        default="lstm",
-        choices=[
-            "lstm",
-            "gru",
-            "transformer",
-            "transformer_dec",
-            "bitransformer",
-            "bitransformer_v2",
-            "attnlstm",
-            "aelstm",
-            "fcn",
-            "linear",
-            "linear_perday",
-        ],
-    )
-    p.add_argument("--pft_mixing", action="store_true")
-    p.add_argument("--pft_meteo_only", action="store_true")
-    p.add_argument("--pft_nonneg", action="store_true")
-    p.add_argument("--seq_length", type=int, default=730)
-    p.add_argument("--hidden_size", type=int, default=128)
-    p.add_argument("--d_model", type=int, default=None)
-    p.add_argument("--num_layers", type=int, default=2)
-    p.add_argument("--num_layers1", type=int, default=2)
-    p.add_argument("--nhead", type=int, default=4)
-    p.add_argument("--forward_expansion", type=int, default=4)
-    p.add_argument("--dropout2", type=float, default=0.0)
-    p.add_argument("--dropout1", type=float, default=0.0)
-    p.add_argument("--dropout_att", type=float, default=0.0)
-    p.add_argument("--feed_forward_trans1", type=int, default=4)
-    p.add_argument("--feed_forward_trans2", type=int, default=4)
-    p.add_argument("--n_attn_blocks", type=int, default=2)
-    p.add_argument("--stress_dim", type=int, default=8)
-    p.add_argument("--d_layers", type=int, default=2)
-    p.add_argument("--embed_size", type=int, default=64)
-
-    # ── Training ──
-    p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--num_epochs", type=int, default=300)
-    p.add_argument("--learning_rate", type=float, default=1e-3)
-    p.add_argument("--weight_decay", type=float, default=1e-5)
-    p.add_argument(
-        "--loss_type",
-        default="huber",
-        choices=["mse", "mae", "huber", "smoothl1", "nmse", "nmae", "gradient"],
-    )
-    p.add_argument("--huber_beta", type=float, default=1.0)
-    p.add_argument("--gradient_loss_weight", type=float, default=0.5)
-    p.add_argument("--peak_penalty_weight", type=float, default=0.0)
-    p.add_argument("--corr_loss_weight", type=float, default=0.0)
-    p.add_argument("--amp_loss_weight", type=float, default=0.0)
-    p.add_argument("--max_grad_norm", type=float, default=1.0)
-    p.add_argument("--patience", type=int, default=11)
-    p.add_argument("--num_workers", type=int, default=4)
-    p.add_argument("--amp", action="store_true")
-    p.add_argument("--compile", action="store_true")
-    p.add_argument(
-        "--no_fused_adam",
-        dest="fused_adam",
-        action="store_false",
-        default=True,
-    )
-
-    # ── Output / resume ──
-    p.add_argument("--output_dir", default="runs")
-    p.add_argument("--experiment", default="exp_big")
-    p.add_argument("--prefix", default="run", help="Prefix for checkpoint filenames.")
-    p.add_argument(
-        "--save_checkpoint_name",
-        default="model",
-        help="Base name for checkpoint files.",
-    )
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--resume", default="")
-
-    return p.parse_args(argv)
 
 
 # ── Phase 2 — directories and logger ────────────────────────────────────────
@@ -953,6 +819,7 @@ def load_checkpoint_if_requested(
         if hasattr(args, k):
             setattr(args, k, v)
 
+    reconcile_resumed_clim_years(args, explicit, logger)
     logger.info(f"Resuming from   : {args.resume}")
     logger.start_task("Loading checkpoint")
 
@@ -1209,7 +1076,14 @@ def generate_summary_plots(exp_dir, train_hist, valid_hist, logger) -> None:
     )
 
 
-def _checkpoint_extras(args, shared, val_rmse, val_r2):
+def _checkpoint_extras(
+    args,
+    shared,
+    val_rmse,
+    val_r2,
+    best_r2_epoch=None,
+    best_val_r2=None,
+):
     """
     Build the dictionary of extra fields that go into every training
     snapshot.
@@ -1230,6 +1104,11 @@ def _checkpoint_extras(args, shared, val_rmse, val_r2):
         Current epoch's validation RMSE, or NaN when unknown.
     val_r2 : float
         Current epoch's validation R², or NaN when unknown.
+    best_r2_epoch : int, optional
+        Epoch with the highest validation R². Diagnostic only; the paper
+        selection rule remains validation loss.
+    best_val_r2 : float, optional
+        Best validation R² seen so far.
 
     Returns
     -------
@@ -1255,10 +1134,85 @@ def _checkpoint_extras(args, shared, val_rmse, val_r2):
         # ── Metrics for the run header ──
         "val_rmse": float(val_rmse),
         "val_r2": float(val_r2),
+        "selection_rule": (
+            "val_loss"
+            if getattr(args, "selection_rule", "val_loss") == "val_loss"
+            else "val_r2"
+        ),
+        "best_r2_epoch": (None if best_r2_epoch is None else int(best_r2_epoch)),
+        "best_val_r2": (
+            None
+            if best_val_r2 is None or not np.isfinite(best_val_r2)
+            else float(best_val_r2)
+        ),
     }
 
 
 # ── Orchestration ───────────────────────────────────────────────────────────
+
+
+_HISTORY_FIELDS = [
+    "epoch",
+    "train_loss",
+    "val_loss",
+    "val_rmse",
+    "val_r2",
+    "lr",
+    "time_s",
+    "is_best",
+    "best_epoch",
+    "best_val_loss",
+    "is_best_r2",
+    "best_r2_epoch",
+    "best_val_r2",
+]
+
+
+def _initial_history_rows(train_hist, valid_hist):
+    """Rebuild ``history.csv`` rows when resuming from a checkpoint."""
+    n = len(valid_hist.get("loss", []))
+    rows = []
+    best = float("inf")
+    best_ep = 0
+    best_r2 = -float("inf")
+    best_r2_ep = 0
+    for i in range(n):
+        ep = i + 1
+        vl = float(valid_hist["loss"][i])
+        vr = float(valid_hist.get("r2", [float("nan")] * n)[i])
+        is_best = vl < best
+        if is_best:
+            best, best_ep = vl, ep
+        is_best_r2 = np.isfinite(vr) and vr > best_r2
+        if is_best_r2:
+            best_r2, best_r2_ep = vr, ep
+        rows.append(
+            {
+                "epoch": ep,
+                "train_loss": float(train_hist.get("loss", [float("nan")] * n)[i]),
+                "val_loss": vl,
+                "val_rmse": float(valid_hist.get("rmse", [float("nan")] * n)[i]),
+                "val_r2": vr,
+                "lr": float("nan"),
+                "time_s": float("nan"),
+                "is_best": bool(is_best),
+                "best_epoch": best_ep,
+                "best_val_loss": best,
+                "is_best_r2": bool(is_best_r2),
+                "best_r2_epoch": best_r2_ep,
+                "best_val_r2": (best_r2 if np.isfinite(best_r2) else float("nan")),
+            }
+        )
+    return rows, best_r2, best_r2_ep
+
+
+def _write_history(path: str, rows) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_HISTORY_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") for k in _HISTORY_FIELDS})
 
 
 def run_training(args, shared, logger, paths, model_objs, state) -> None:
@@ -1278,6 +1232,7 @@ def run_training(args, shared, logger, paths, model_objs, state) -> None:
         ``(resume_ckpt, start_epoch, best_val_loss, best_epoch,
         epochs_no_improve, train_hist, valid_hist)``.
     """
+    args._early_stop_epoch = None
     model, optimizer, scheduler, criterion = model_objs
     (
         resume_ckpt,
@@ -1303,6 +1258,16 @@ def run_training(args, shared, logger, paths, model_objs, state) -> None:
     )
 
     run_model = torch.compile(model) if args.compile else model
+
+    # ── History / best-epoch bookkeeping ──
+    history_rows, best_val_r2, best_r2_epoch = _initial_history_rows(
+        train_hist, valid_hist
+    )
+    history_path = os.path.join(paths.exp, "history.csv")
+    if history_rows:
+        _write_history(history_path, history_rows)
+    best_r2_metrics = None
+    best_loss_metrics = None
 
     for epoch in range(start_epoch, args.num_epochs + 1):
         t0 = time.time()
@@ -1355,13 +1320,72 @@ def run_training(args, shared, logger, paths, model_objs, state) -> None:
         valid_hist["rmse"].append(val_rmse)
         valid_hist["r2"].append(val_r2)
 
-        is_best = val_loss < best_val_loss
-        if is_best:
+        is_best_loss = val_loss < best_val_loss
+        if is_best_loss:
             best_val_loss = val_loss
+        is_best_r2 = np.isfinite(val_r2) and val_r2 > best_val_r2
+        if is_best_r2:
+            best_val_r2 = val_r2
+            best_r2_epoch = epoch
+
+        if args.selection_rule == "val_r2":
+            is_best = is_best_r2
+        else:
+            is_best = is_best_loss
+        if is_best:
             best_epoch = epoch
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
+
+        # ── History + per-epoch best snapshots ──
+        history_rows.append(
+            {
+                "epoch": epoch,
+                "train_loss": float(train_loss),
+                "val_loss": float(val_loss),
+                "val_rmse": float(val_rmse),
+                "val_r2": float(val_r2),
+                "lr": float(lr),
+                "time_s": float(dt),
+                "is_best": bool(is_best),
+                "best_epoch": int(best_epoch),
+                "best_val_loss": float(best_val_loss),
+                "is_best_r2": bool(is_best_r2),
+                "best_r2_epoch": int(best_r2_epoch),
+                "best_val_r2": (
+                    float(best_val_r2) if np.isfinite(best_val_r2) else float("nan")
+                ),
+            }
+        )
+        _write_history(history_path, history_rows)
+        epoch_metrics = {
+            "epoch": int(epoch),
+            "val_loss": float(val_loss),
+            "val_rmse": float(val_rmse),
+            "val_r2": float(val_r2),
+            "selection_rule": (
+                "lowest validation loss"
+                if args.selection_rule == "val_loss"
+                else "highest validation R²"
+            ),
+        }
+        if is_best_loss:
+            best_loss_metrics = dict(
+                epoch_metrics, selection_rule="lowest validation loss"
+            )
+            write_json(
+                os.path.join(paths.exp, "metrics_at_best_loss.json"),
+                best_loss_metrics,
+            )
+        if is_best_r2:
+            best_r2_metrics = dict(
+                epoch_metrics, selection_rule="highest validation R² (diagnostic)"
+            )
+            write_json(
+                os.path.join(paths.exp, "metrics_at_best_r2.json"),
+                best_r2_metrics,
+            )
 
         # ── Every-epoch snapshot (lightweight) ──
         ModelUtils.save_training_checkpoint(
@@ -1382,7 +1406,14 @@ def run_training(args, shared, logger, paths, model_objs, state) -> None:
             logger=None,  # silent for the every-epoch snapshot
             checkpoint_type="epoch",
             save_full_model=False,
-            extra=_checkpoint_extras(args, shared, val_rmse, val_r2),
+            extra=_checkpoint_extras(
+                args,
+                shared,
+                val_rmse,
+                val_r2,
+                best_r2_epoch=best_r2_epoch,
+                best_val_r2=best_val_r2,
+            ),
         )
 
         if is_best:
@@ -1404,11 +1435,23 @@ def run_training(args, shared, logger, paths, model_objs, state) -> None:
                 logger=logger,
                 checkpoint_type="best",
                 save_full_model=True,
-                extra=_checkpoint_extras(args, shared, val_rmse, val_r2),
+                extra=_checkpoint_extras(
+                    args,
+                    shared,
+                    val_rmse,
+                    val_r2,
+                    best_r2_epoch=best_r2_epoch,
+                    best_val_r2=best_val_r2,
+                ),
             )
-            logger.success(f"  ✓ Best checkpoint saved (val_loss={val_loss:.6f})")
+            rule = "val_loss" if args.selection_rule == "val_loss" else "val_R²"
+            logger.success(
+                f"  ✓ Best checkpoint saved ({rule}: "
+                f"val_loss={val_loss:.6f}, val_R²={val_r2:.4f})"
+            )
 
         if epochs_no_improve >= args.patience:
+            args._early_stop_epoch = int(epoch)
             logger.warning(
                 f"Early stopping at epoch {epoch} — no improvement "
                 f"for {args.patience} epochs."
@@ -1441,13 +1484,66 @@ def run_training(args, shared, logger, paths, model_objs, state) -> None:
         logger=logger,
         checkpoint_type="final",
         save_full_model=True,
-        extra=_checkpoint_extras(args, shared, val_rmse, val_r2),
+        extra=_checkpoint_extras(
+            args,
+            shared,
+            val_rmse,
+            val_r2,
+            best_r2_epoch=best_r2_epoch,
+            best_val_r2=best_val_r2,
+        ),
     )
 
     generate_summary_plots(paths.exp, train_hist, valid_hist, logger)
+    _write_history(history_path, history_rows)
+    # ``args`` carries runtime-only private attributes (for example the
+    # in-memory site pool); keep them out of the on-disk config.
+    public_args = {k: v for k, v in vars(args).items() if not str(k).startswith("_")}
     with open(os.path.join(paths.exp, "config.json"), "w") as f:
-        json.dump(vars(args), f, indent=2, default=str)
+        json.dump(public_args, f, indent=2, default=str)
     logger.info(f"Config saved to {os.path.join(paths.exp, 'config.json')}")
+
+    # ── Reproducibility metadata (git commit, data hashes, split) ──
+    data_paths = [
+        p
+        for p in (
+            args.stats_path,
+            args.co2_path,
+            args.selected_pixels,
+            args.parent_map,
+            args.resume,
+        )
+        if p
+    ]
+    run_meta = collect_run_metadata(
+        args,
+        data_paths=data_paths,
+        extra={
+            "stage": "train",
+            "protocol": args.protocol,
+            "train_years": shared.train_years,
+            "val_years": shared.val_years,
+            "test_years": getattr(args, "_test_years", []),
+            "norm_years": parse_year_list(args.norm_years),
+            "clim_years": (
+                parse_year_list(args.clim_years) if args.anomaly_mode else []
+            ),
+            "selection_rule": args.selection_rule,
+            "best_epoch": int(best_epoch),
+            "early_stop_epoch": getattr(args, "_early_stop_epoch", None),
+            "best_val_loss": (
+                None if not np.isfinite(best_val_loss) else float(best_val_loss)
+            ),
+            "best_r2_epoch": int(best_r2_epoch),
+            "best_val_r2": (
+                None if not np.isfinite(best_val_r2) else float(best_val_r2)
+            ),
+            "n_train_sites": len(shared.train_pool),
+            "n_val_sites": len(shared.val_sites),
+        },
+    )
+    write_json(os.path.join(paths.exp, "run_metadata.json"), run_meta)
+    logger.info(f"Run metadata → {os.path.join(paths.exp, 'run_metadata.json')}")
 
 
 # ── Orchestration helpers — used by main() and by the sweep drivers ─────────
@@ -1481,6 +1577,41 @@ def load_shared(args, logger, device, resume_ckpt=None) -> SharedData:
     all_years = sorted(set(train_years) | set(val_years))
     logger.info(f"Train years     : {train_years}")
     logger.info(f"Val years       : {val_years}")
+
+    # ── Split / leakage validation (PROTOCOL.md §2) ──
+    # Normalise once so metadata, config.json and the ``in ("A", "B")``
+    # checks downstream always see the canonical spelling.
+    args.protocol = normalise_protocol(getattr(args, "protocol", "none"))
+    allow_leakage = getattr(args, "allow_leakage", False)
+    test_years = parse_year_list(getattr(args, "test_years", ""))
+    args._test_years = test_years
+    if test_years:
+        logger.info(f"Test years      : {test_years}")
+    for w in validate_split(
+        train_years,
+        val_years,
+        test_years,
+        protocol=args.protocol,
+        strict=not allow_leakage,
+    ):
+        logger.warning(w)
+    norm_years = parse_year_list(getattr(args, "norm_years", ""))
+    if norm_years:
+        for w in validate_normalisation_years(
+            norm_years, train_years, strict=not allow_leakage
+        ):
+            logger.warning(w)
+    if args.anomaly_mode:
+        # Never fall back to a hard-coded 1992–2010 window: that would leak
+        # 2010 into the climatology whenever training stops earlier.  When the
+        # user does not pass --clim_years, use the training years.
+        if not parse_year_list(getattr(args, "clim_years", "")):
+            args.clim_years = args.train_years
+        clim_years = parse_year_list(args.clim_years)
+        for w in validate_climatology_years(
+            clim_years, train_years, strict=not allow_leakage
+        ):
+            logger.warning(w)
 
     norm_stats = load_norm_stats(args, logger)
     co2_lut = load_co2_lut_if_requested(args, norm_stats, logger)
@@ -1643,6 +1774,9 @@ def main():
 
     # ── Environment ──
     paths, logger = setup_directories_and_logging(args)
+    # A checkpoint written before the paper protocol stored the old
+    # --clim_years 1992-2010 default; do not let that leak 2010 back in.
+    reconcile_resumed_clim_years(args, _cli_explicit_args(), logger)
     log_configuration(args, logger)
     device = setup_device_and_seed(args, logger)
 

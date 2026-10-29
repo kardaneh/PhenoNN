@@ -51,7 +51,7 @@ Or, if you prefer the verbose per-test output::
     python -m unittest discover -s tests -v
 
 The tests use no GPU and no external data files. A run of the full suite
-takes a few seconds on a laptop.
+takes under a minute on a laptop.
 
 Running the pipeline smoke test
 -------------------------------

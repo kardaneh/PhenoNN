@@ -92,6 +92,12 @@ def parse_args():
         "xgb_predict.py.",
     )
     p.add_argument(
+        "--deltas",
+        default="",
+        help="Perturbation deltas.csv (site_id, year, doy, lai_base, "
+        "lai_pert). Writes pheno_deltas.csv and exits.",
+    )
+    p.add_argument(
         "--target_dir",
         default="",
         help="Folder of LAI_dekadal_{Y}.nc (obs-only mode if "
@@ -171,8 +177,14 @@ def _load_from_predictions(path: str) -> pd.DataFrame:
     """
     Read a predictions CSV produced by prediction_big.py / xgb_predict.py.
     Returns a DataFrame with columns site_id, year, doy, lai_obs, lai_pred.
+
+    A perturbation ``deltas.csv`` (``lai_base`` / ``lai_pert``) is accepted
+    when ``lai_pred`` is absent: ``lai_pert`` becomes the prediction.
     """
     df = pd.read_csv(path)
+    if "lai_pred" not in df.columns and "lai_pert" in df.columns:
+        df = df.copy()
+        df["lai_pred"] = df["lai_pert"]
     needed = {"site_id", "year", "doy", "lai_obs", "lai_pred"}
     missing = needed - set(df.columns)
     if missing:
@@ -181,6 +193,19 @@ def _load_from_predictions(path: str) -> pd.DataFrame:
             f"Got {list(df.columns)}."
         )
     return df[["site_id", "year", "doy", "lai_obs", "lai_pred"]].copy()
+
+
+def _load_from_deltas(path: str) -> pd.DataFrame:
+    """Read a perturbation ``deltas.csv`` (site_id, year, doy, lai_base, lai_pert)."""
+    df = pd.read_csv(path)
+    needed = {"site_id", "year", "doy", "lai_base", "lai_pert"}
+    missing = needed - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{path}: missing required columns {sorted(missing)}. "
+            "Expected the perturbation deltas.csv written by run_perturbation.py."
+        )
+    return df[["site_id", "year", "doy", "lai_base", "lai_pert"]].copy()
 
 
 def _load_from_target_dir(path: str) -> pd.DataFrame:
@@ -543,8 +568,48 @@ def plot_one_metric(
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
+def _run_pheno_deltas(args) -> None:
+    """Compute SOS/EOS/LOS differences between ``lai_base`` and ``lai_pert``."""
+    os.makedirs(args.output_dir, exist_ok=True)
+    df = _load_from_deltas(args.deltas)
+    print(f"Loaded deltas CSV      : {len(df):,} rows from {args.deltas}")
+
+    year_filter = _parse_year_spec(args.years)
+    if year_filter is not None:
+        df = df[df["year"].isin(year_filter)].copy()
+    df = _select_sites(df, args)
+    print(
+        f"Sites / years          : {df['site_id'].nunique():,} / "
+        f"{sorted(df['year'].unique().tolist())}"
+    )
+
+    base = compute_metrics(df, "lai_base", args.min_valid, args.min_amplitude)
+    pert = compute_metrics(df, "lai_pert", args.min_valid, args.min_amplitude)
+    merged = base.merge(pert, on=["site_id", "year"], suffixes=("_base", "_pert"))
+    for col, _, _ in METRICS:
+        merged[f"d{col}"] = merged[f"{col}_pert"] - merged[f"{col}_base"]
+
+    out = os.path.join(args.output_dir, "pheno_deltas.csv")
+    merged.to_csv(out, index=False)
+    print(f"Phenology deltas       -> {out}")
+
+    print("\nMedian change (perturbed − baseline):")
+    for col, title, _ in METRICS:
+        d = merged[f"d{col}"].dropna()
+        if d.empty:
+            print(f"  {title:<45s} n/a")
+        else:
+            print(
+                f"  {title:<45s} {d.median():+.3f} "
+                f"(mean {d.mean():+.3f}, n={len(d):,})"
+            )
+
+
 def main():
     args = parse_args()
+    if args.deltas:
+        _run_pheno_deltas(args)
+        return
     if not args.predictions and not args.target_dir:
         raise ValueError("Provide either --predictions or --target_dir.")
     if args.predictions and args.target_dir:

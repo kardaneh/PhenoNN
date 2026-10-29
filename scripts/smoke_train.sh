@@ -67,6 +67,11 @@ if [[ ! -x "$PYTHON" ]]; then
     PYTHON="python"
 fi
 
+# Keep the smoke test inside a 1 GB per-process cgroup on shared login nodes.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+
 "$PYTHON" -m phenonn.training.train_full_ram \
     --features_dir      "$FEATURES_DIR" \
     --target_dir        "$TARGET_DIR" \

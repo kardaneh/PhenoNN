@@ -52,7 +52,12 @@ def main():
         chans = [
             ChannelPerturbation(f, mul=args.precip_factor) for f in PRECIP_CHANNELS
         ]
-        return Perturbation(chans, norm_stats, season_ranges=SEASONS[args.season])
+        return Perturbation(
+            chans,
+            norm_stats,
+            season_ranges=SEASONS[args.season],
+            hemisphere=getattr(args, "hemisphere", "north"),
+        )
 
     R.run(
         args,

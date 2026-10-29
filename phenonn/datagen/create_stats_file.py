@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -48,12 +48,12 @@ Examples
 ::
 
     python -m phenonn.datagen.create_stats_file \\
-        --features_dir /leonardo_work/EUHPC_D36_053/PhenoNN/data/era5_pixelset \\
-        --target_dir   /leonardo_work/EUHPC_D36_053/PhenoNN/data/LAI_pixelset \\
-        --pft_dir      /leonardo_work/EUHPC_D36_053/PhenoNN/data/PFT_pixelset \\
-        --co2_path     /leonardo_work/EUHPC_D36_053/PhenoNN/data/CO2_1700_2023_TRENDYv2024.txt \\
+        --features_dir /path/to/data/era5_pixelset \\
+        --target_dir   /path/to/data/LAI_pixelset \\
+        --pft_dir      /path/to/data/PFT_pixelset \\
+        --co2_path     /path/to/data/CO2_1700_2023_TRENDYv2024.txt \\
         --year_start 1992 --year_end 2019 \\
-        --output       /leonardo_work/EUHPC_D36_053/PhenoNN/data/norm_stats_1992_2019.json
+        --output       /path/to/data/norm_stats_1992_2019.json
 """
 
 import argparse

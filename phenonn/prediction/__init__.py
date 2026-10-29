@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -27,14 +27,27 @@ The legacy flat-CSV predictor (``predict_flat``) has been moved to
 ``legacy/prediction/``.
 """
 
-from .predict import (
-    main,
-    _parse_year_spec,
-    _resolve_sites,
-)
+import importlib
 
 __all__ = [
     "main",
     "_parse_year_spec",
     "_resolve_sites",
 ]
+
+_LAZY_ATTRS = {name: ("phenonn.prediction.predict", name) for name in __all__}
+
+
+def __getattr__(name):
+    """PEP 562 lazy access for the prediction pipeline."""
+    try:
+        module_name, attribute = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

@@ -82,22 +82,25 @@ Installing PhenoNN
 
 4. **Install PhenoNN in editable mode**:
 
-   Base install (only what the package needs at runtime)::
+   Base install (lightweight import and CLI)::
 
        uv pip install -e .
 
-   Developer install (adds pytest, ruff, black, pydocstyle,
-   pre-commit)::
+   Full install (models, training, prediction and figures)::
 
-       uv pip install -e ".[dev]"
+       uv pip install -e ".[full]"
+
+   Developer install (adds ruff and pre-commit)::
+
+       uv pip install -e ".[full,dev]"
 
    Documentation install (adds Sphinx and its extensions)::
 
-       uv pip install -e ".[docs]"
+       uv pip install -e ".[full,docs]"
 
-   Both at once::
+   All at once::
 
-       uv pip install -e ".[dev,docs]"
+       uv pip install -e ".[full,dev,docs]"
 
    The ``-e`` flag installs the package in editable mode: changes to
    the Python source are picked up immediately, without a reinstall.
@@ -133,16 +136,16 @@ be imported, which is enough to pinpoint the problem.
 Dependencies
 ------------
 
-``uv pip install -e .`` installs the runtime dependencies declared in
-``pyproject.toml``:
+The base install provides the lightweight import/CLI path. The ``full``
+extra installs the model, training, prediction and figure stack:
 
 - **PyTorch** ≥ 2.0 — deep learning framework
-- **NumPy** ≥ 1.24
+- **NumPy** ≥ 1.23
 - **Pandas** ≥ 2.0
 - **Xarray** ≥ 2023.1
 - **netCDF4** ≥ 1.6
 - **h5netcdf** ≥ 1.1
-- **Matplotlib** ≥ 3.6
+- **Matplotlib** ≥ 3.5
 - **SciPy** ≥ 1.10
 - **scikit-learn** ≥ 1.3
 - **rich** ≥ 13.0 — console output
@@ -152,12 +155,11 @@ Dependencies
 Optional extras
 ~~~~~~~~~~~~~~~
 
-- **dev** — ``pytest``, ``pytest-cov``, ``ruff``, ``black``,
-  ``pydocstyle``, ``pre-commit``. Needed to run the test suite and the
-  linters.
+- **full** — the model, training, prediction and figure dependencies.
+- **dev** — ``ruff`` and ``pre-commit``. Needed for the lint/format gate.
 - **docs** — Sphinx, ``myst-parser``, ``sphinx-rtd-theme``,
-  ``sphinx-copybutton``, ``sphinx-autodoc-typehints``,
-  ``sphinx-autoapi``. Needed to build the documentation locally.
+  ``sphinx-copybutton``, ``sphinx-autodoc-typehints``. Needed to build
+  the documentation locally.
 
 Troubleshooting
 ---------------
@@ -185,7 +187,7 @@ scratch::
     rm -rf .venv
     uv venv --python 3.10
     source .venv/bin/activate
-    uv pip install -e .
+    uv pip install -e ".[full]"
 
 **Python version issues**
 

@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -30,7 +30,12 @@ Logger
     Logger
 General helpers
     FileUtils, EasyDict
+
+Heavy names are imported lazily, so ``from phenonn.utils.logger import Logger``
+does not import torch or matplotlib.
 """
+
+import importlib
 
 from .config import (
     ALL_FEATURES,
@@ -53,24 +58,6 @@ from .config import (
     VALID_FNAME,
     SELECTED_PIXELS_FNAME,
 )
-from .wrappers import (
-    DailyWrapper,
-    Every10DaysWrapper,
-    PFTMixingWrapper,
-    permuteWrapper,
-)
-from .model_loader import build_model, build_model_pft
-from .evaluater import nan_safe_loss, nan_safe_mse, make_loss_fn
-from .diagnostics import (
-    plot_loss_histories,
-    plot_metric_histories,
-    plot_pred_vs_obs,
-    plot_gcc_curves,
-    plot_gcc_curves_all,
-    make_history_dicts,
-)
-from .logger import Logger
-from .utils import FileUtils, EasyDict
 
 __all__ = [
     "ALL_FEATURES",
@@ -111,3 +98,51 @@ __all__ = [
     "FileUtils",
     "EasyDict",
 ]
+
+_LAZY_ATTRS = {
+    "DailyWrapper": ("phenonn.utils.wrappers", "DailyWrapper"),
+    "Every10DaysWrapper": ("phenonn.utils.wrappers", "Every10DaysWrapper"),
+    "PFTMixingWrapper": ("phenonn.utils.wrappers", "PFTMixingWrapper"),
+    "permuteWrapper": ("phenonn.utils.wrappers", "permuteWrapper"),
+    "build_model": ("phenonn.utils.model_loader", "build_model"),
+    "build_model_pft": ("phenonn.utils.model_loader", "build_model_pft"),
+    "nan_safe_loss": ("phenonn.utils.evaluater", "nan_safe_loss"),
+    "nan_safe_mse": ("phenonn.utils.evaluater", "nan_safe_mse"),
+    "make_loss_fn": ("phenonn.utils.evaluater", "make_loss_fn"),
+    "plot_loss_histories": (
+        "phenonn.utils.diagnostics",
+        "plot_loss_histories",
+    ),
+    "plot_metric_histories": (
+        "phenonn.utils.diagnostics",
+        "plot_metric_histories",
+    ),
+    "plot_pred_vs_obs": ("phenonn.utils.diagnostics", "plot_pred_vs_obs"),
+    "plot_gcc_curves": ("phenonn.utils.diagnostics", "plot_gcc_curves"),
+    "plot_gcc_curves_all": (
+        "phenonn.utils.diagnostics",
+        "plot_gcc_curves_all",
+    ),
+    "make_history_dicts": (
+        "phenonn.utils.diagnostics",
+        "make_history_dicts",
+    ),
+    "Logger": ("phenonn.utils.logger", "Logger"),
+    "FileUtils": ("phenonn.utils.utils", "FileUtils"),
+    "EasyDict": ("phenonn.utils.utils", "EasyDict"),
+}
+
+
+def __getattr__(name):
+    """PEP 562 lazy access for the heavy utility names."""
+    try:
+        module_name, attribute = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

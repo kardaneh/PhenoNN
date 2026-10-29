@@ -19,16 +19,11 @@ Run every command from the repository root after following
 [the analysis setup](../README.md#before-you-start).
 
 ```bash
-cd /home/ecarlin/PhenoNN
+cd /path/to/PhenoNN
 source .venv/bin/activate
 
-export DATA="$PWD/pixelset1"
-export RUNS="$PWD/runs"
-export RUNS_TARGET=/net/nfs/ssd1/ecarlin/phenonn/runs
-
-test -L "$RUNS" || { echo "runs/ is not a symlink; stop"; exit 1; }
-test "$(readlink -f "$RUNS")" = "$RUNS_TARGET" \
-    || { echo "runs/ points somewhere unexpected"; exit 1; }
+export DATA="${DATA:-$PWD/pixelset1}"
+export RUNS="${RUNS:-$PWD/runs}"
 
 export DATA
 export RUNS
@@ -131,6 +126,26 @@ CO2 run.
 If the checkpoint was trained with ablated features, the same channels are
 zeroed during perturbation inference. Daily-output checkpoints are sampled at
 the 36 dekad positions so every scenario writes the same table layout.
+
+## Warming + CO2 sweep (F10)
+
+`warming_co2.py` runs one scenario.  For the F10 response table, sweep a
+temperature grid and CO2 modes in one process:
+
+```bash
+.venv/bin/python -m analysis.perturbation.warming_co2_sweep \
+    --checkpoint "$CKPT" \
+    --predict_sites test --predict_years 2010-2019 \
+    --delta_t_values 0,1,2,3,4 \
+    --co2_modes absolute,detrend \
+    --output_dir "$PERT_OUT"
+```
+
+It writes `$PERT_OUT/warming_co2.csv`, with one row per
+`(delta_t, co2_mode)`: mean ΔLAI, median ΔSOS/ΔEOS/ΔLOS at the 10 % threshold,
+the number of site-years, and an `out-of-range` flag when the perturbed CO2
+falls outside the checkpoint's training-year CO2 range.  Pass this CSV to
+`analysis.figures.make_all --warming_csv ...`.
 
 ## Aggregate the scenarios
 

@@ -37,6 +37,7 @@ __all__ = [
     "ChannelPerturbation",
     "Perturbation",
     "doy_of_positions",
+    "resolve_hemisphere",
     "season_mask",
 ]
 
@@ -62,6 +63,7 @@ def doy_of_positions(seq_length: int) -> np.ndarray:
 def season_mask(
     seq_length: int,
     ranges: Sequence[tuple[int, int]] | None,
+    hemisphere: str = "north",
 ) -> np.ndarray:
     """Build a boolean mask for one or more inclusive day-of-year ranges.
 
@@ -74,6 +76,9 @@ def season_mask(
         ``start > end`` wraps across the new year, for example
         ``(335, 59)`` for December to February. ``None`` or an empty sequence
         selects the whole window.
+    hemisphere : {"north", "south"}
+        Southern-hemisphere seasons are shifted by 182 days so that the
+        ``summer`` window still means the local summer.
 
     Returns
     -------
@@ -84,6 +89,8 @@ def season_mask(
     if not ranges:
         return np.ones(seq_length, dtype=bool)
     doy = doy_of_positions(seq_length)
+    if str(hemisphere).lower() in ("south", "sh", "southern"):
+        doy = ((doy - 1 + 182) % 365) + 1
     mask = np.zeros(seq_length, dtype=bool)
     for lo, hi in ranges:
         if lo <= hi:
@@ -91,6 +98,14 @@ def season_mask(
         else:  # Wrap around December to January.
             mask |= (doy >= lo) | (doy <= hi)
     return mask
+
+
+def resolve_hemisphere(latitude) -> str:
+    """Return ``"north"`` or ``"south"`` for a scalar latitude."""
+    try:
+        return "south" if float(latitude) < 0.0 else "north"
+    except (TypeError, ValueError):
+        return "north"
 
 
 # Named DOY windows (non-leap calendar) for the seasonal scenarios.
@@ -119,13 +134,20 @@ class ChannelPerturbation:
         Multiplicative change in physical units. The default is ``1.0``.
     """
 
-    def __init__(self, feature: str, add: float = 0.0, mul: float = 1.0) -> None:
+    def __init__(
+        self,
+        feature: str,
+        add: float = 0.0,
+        mul: float = 1.0,
+        set_to: float | None = None,
+    ) -> None:
         if feature not in ALL_FEATURES:
             raise SystemExit(f"unknown feature {feature!r}; not in ALL_FEATURES")
         self.feature = feature
         self.ch = ALL_FEATURES.index(feature)
         self.add = float(add)
         self.mul = float(mul)
+        self.set_to = None if set_to is None else float(set_to)
         self.is_log = feature in LOG_TRANSFORM_FEATURES
 
 
@@ -147,28 +169,80 @@ class Perturbation:
         whole window.
     """
 
-    def __init__(self, channels, norm_stats, season_ranges=None) -> None:
+    def __init__(
+        self,
+        channels,
+        norm_stats,
+        season_ranges=None,
+        hemisphere="north",
+        position_mask=None,
+    ) -> None:
         if not channels:
             raise SystemExit("Perturbation needs at least one channel.")
         self.channels = list(channels)
         self.norm_stats = norm_stats  # None means the inputs are raw.
         self.season_ranges = season_ranges
+        # "north", "south" or "auto".  "auto" requires per-sample latitudes in
+        # ``apply`` so mixed-hemisphere datasets use the correct local season.
+        self.hemisphere = str(hemisphere).lower()
+        # Explicit per-position mask (length = seq_length) for impulse studies.
+        self.position_mask = (
+            None if position_mask is None else np.asarray(position_mask, dtype=bool)
+        )
         self._mask_cache = {}
 
     def _mask(self, seq_length: int, device) -> torch.Tensor:
         """Return the seasonal mask for one input length and device."""
         if seq_length not in self._mask_cache:
-            mask = season_mask(seq_length, self.season_ranges).astype(np.float32)
+            if self.position_mask is not None:
+                if self.position_mask.size != seq_length:
+                    raise ValueError(
+                        f"position_mask has length {self.position_mask.size}, "
+                        f"expected {seq_length}"
+                    )
+                mask = self.position_mask.astype(np.float32)
+            else:
+                hemi = (
+                    self.hemisphere
+                    if self.hemisphere in ("north", "south")
+                    else "north"
+                )
+                mask = season_mask(
+                    seq_length, self.season_ranges, hemisphere=hemi
+                ).astype(np.float32)
             self._mask_cache[seq_length] = torch.from_numpy(mask)
         return self._mask_cache[seq_length].to(device)
 
-    def apply(self, x: torch.Tensor) -> torch.Tensor:
+    def _sample_mask(self, seq_length: int, device, lats) -> torch.Tensor:
+        """Return a ``(B, L)`` mask for per-sample latitudes."""
+        base = torch.as_tensor(
+            doy_of_positions(seq_length).astype(np.float32), device=device
+        ).unsqueeze(0)  # (1, L)
+        lat = torch.as_tensor(lats, dtype=torch.float32, device=device).reshape(-1, 1)
+        shift = torch.where(
+            lat < 0.0, torch.full_like(lat, 182.0), torch.zeros_like(lat)
+        )
+        doy = torch.remainder(base - 1.0 + shift, 365.0) + 1.0  # (B, L)
+        if not self.season_ranges:
+            return torch.ones_like(doy)
+        mask = torch.zeros_like(doy)
+        for lo, hi in self.season_ranges:
+            if lo <= hi:
+                m = ((doy >= lo) & (doy <= hi)).float()
+            else:
+                m = ((doy >= lo) | (doy <= hi)).float()
+            mask = torch.maximum(mask, m)
+        return mask
+
+    def apply(self, x: torch.Tensor, lats=None) -> torch.Tensor:
         """Return a perturbed copy of the normalized input ``x``.
 
         Parameters
         ----------
         x : torch.Tensor
             Normalized input tensor with shape ``(B, C, L)``.
+        lats : array-like, optional
+            Per-sample latitudes.  Required when ``hemisphere="auto"``.
 
         Returns
         -------
@@ -177,7 +251,10 @@ class Perturbation:
             ``channels`` are unchanged.
         """
         seq_length = x.shape[2]
-        mask = self._mask(seq_length, x.device)  # (L,)
+        if self.hemisphere == "auto" and lats is not None:
+            mask = self._sample_mask(seq_length, x.device, lats)  # (B, L)
+        else:
+            mask = self._mask(seq_length, x.device).unsqueeze(0)  # (1, L)
         keep = 1.0 - mask
         x = x.clone()
         for channel_perturbation in self.channels:
@@ -198,9 +275,12 @@ class Perturbation:
                 mean, std = 0.0, 1.0
                 physical = z
 
-            physical_new = (
-                physical * channel_perturbation.mul + channel_perturbation.add
-            )
+            if channel_perturbation.set_to is not None:
+                physical_new = torch.full_like(physical, channel_perturbation.set_to)
+            else:
+                physical_new = (
+                    physical * channel_perturbation.mul + channel_perturbation.add
+                )
             if self.norm_stats is not None and channel_perturbation.is_log:
                 z_new = (torch.log1p(physical_new.clamp(min=0.0)) - mean) / std
             elif self.norm_stats is not None:
@@ -223,10 +303,13 @@ class Perturbation:
         parts = []
         for channel_perturbation in self.channels:
             operations = []
+            if channel_perturbation.set_to is not None:
+                operations.append(f"={channel_perturbation.set_to:g}")
             if channel_perturbation.mul != 1.0:
                 operations.append(f"x{channel_perturbation.mul:g}")
             if channel_perturbation.add != 0.0:
                 operations.append(f"{channel_perturbation.add:+g}")
             description = " ".join(operations) or "(no-op)"
             parts.append(f"{channel_perturbation.feature} {description}")
-        return f"[{'; '.join(parts)}] over {season}"
+        hemi = "" if self.hemisphere == "north" else f" [{self.hemisphere}]"
+        return f"[{'; '.join(parts)}] over {season}{hemi}"

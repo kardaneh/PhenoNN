@@ -101,7 +101,11 @@ fi
 # --hidden_size 64 --num_epochs 10 : vs 32 / 2
 # Batch/workers/amp follow the device policy above (GPU: 64/4/--amp).
 run_train() {
-    python -m phenonn.training.train_full_ram \
+    PYTHON="${PYTHON:-$REPO/.venv/bin/python}"
+    if [[ ! -x "$PYTHON" ]]; then
+        PYTHON="python"
+    fi
+    "$PYTHON" -m phenonn.training.train_full_ram \
     --features_dir      "$FEATURES_DIR" \
     --target_dir        "$TARGET_DIR" \
     --pft_dir           "$PFT_DIR" \

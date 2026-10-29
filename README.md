@@ -1,9 +1,9 @@
 # PhenoNN: Phenology Neural Networks
 
-[![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 [![Docs](https://img.shields.io/badge/docs-sphinx-brightgreen.svg)](https://phenonn.readthedocs.io/)
-[![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Code Style](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 PhenoNN is a deep learning framework for predicting **Leaf Area Index
 (LAI)** from climate data. It reads a two-year window of daily ERA5-Land
@@ -76,8 +76,8 @@ ecosystems in climate models, with four research directions:
 
 ### Prerequisites
 
-- Python **3.11** or higher
-- PyTorch 2.0 or higher
+- Python **3.10** or higher
+- PyTorch 2.0 or higher (installed by the `full` extra)
 - CUDA-capable GPU (optional)
 - Git
 
@@ -98,9 +98,16 @@ ecosystems in climate models, with four research directions:
    cd PhenoNN
    uv venv --python 3.11
    source .venv/bin/activate
-   uv pip install -e .              # base install
-   uv pip install -e ".[dev]"       # + pytest, ruff, black, pydocstyle, pre-commit
-   uv pip install -e ".[docs]"      # + Sphinx
+   uv pip install -e ".[full]"       # models, training, prediction, figures
+   uv pip install -e ".[full,dev]"   # + pre-commit and ruff
+   uv pip install -e ".[full,docs]"  # + Sphinx
+   ```
+
+   For a CPU-only machine, install the CPU torch wheel first:
+
+   ```bash
+   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+   uv pip install -e ".[full]"
    ```
 
 3. **Verify the installation**:
@@ -131,12 +138,21 @@ python -m phenonn.training.train_full_ram \
     --parent_map      /path/to/selected_pixels01_1.nc \
     --stats_path      /path/to/norm_stats.json \
     --co2_path        /path/to/CO2.txt \
-    --train_years 1992-2009 --val_years 2010-2019 \
+    --train_years 1992-2006 --val_years 2007-2009 --test_years 2010-2019 \
+    --norm_years 1992-2006 \
+    --protocol B \
     --type lstm --hidden_size 256 --num_layers 2 \
     --pft_mixing --pft_meteo_only \
     --num_epochs 100 \
     --output_dir runs --experiment my_run
 ```
+
+Protocol B is the unbiased paper split. For the report reproduction
+(Protocol A), use `--train_years 1992-2009 --val_years 2010-2019
+--test_years 2010-2019 --protocol A` instead. Pass `--norm_years` with the
+years used to build `--stats_path`, and keep `--clim_years` inside the
+training years: the trainer refuses either window if it includes validation or
+test years. See [Evaluation protocols](#evaluation-protocols).
 
 Checkpoints and logs land in `runs/my_run/checkpoints/` and
 `runs/my_run/logs/`. Keep `runs/` as a symlink to SSD-backed storage on the
@@ -147,7 +163,8 @@ cluster; the repository ignores the link itself.
 ```bash
 python -m phenonn.prediction.predict \
     --checkpoint runs/my_run/checkpoints/run_best_model.pth.tar \
-    --predict_sites val \
+    --predict_sites test \
+    --protocol B --test_years 2010-2019 \
     --output_csv runs/my_run/predictions.csv
 ```
 
@@ -155,6 +172,23 @@ The predictor reads the data directories from the checkpoint's saved
 arguments. It writes a per-`(site, year, dekad)` CSV plus diagnostic
 plots (`*_pred_vs_obs.png`, `*_lai_curves.png`,
 `*_lai_curves_all.png`) and a metrics summary text file.
+
+### Evaluation protocols
+
+`--protocol` selects one of three splits. It is case-insensitive and applies
+to both training and prediction.
+
+| Protocol | Train | Validation | Test | Why |
+|---|---|---|---|---|
+| `A` | 1992–2009 | 2010–2019 | 2010–2019 | **Reproduction.** Matches the report, which used one decade for early stopping and reporting. Validation and test overlap by design, so these test metrics are optimistic and not a headline claim. |
+| `B` | 1992–2006 | 2007–2009 | 2010–2019 | **Unbiased paper split.** Train, validation and test are disjoint, so model selection never sees the test decade. Use this for headline claims. |
+| `none` | user-defined | user-defined | optional | Ad-hoc runs. Leakage checks still run, but no protocol-specific overlap rule is applied. |
+
+Protocol B needs `--test_years`. Protocol A needs `--test_years` equal to
+`--val_years`. Pass `--norm_years` with the years used to build `--stats_path`,
+and keep `--clim_years` inside the training years; otherwise the run stops
+with a `LeakageError` (override with `--allow_leakage` only for a documented
+diagnostic).
 
 ### Run a smoke test
 
@@ -327,11 +361,12 @@ PhenoNN/
 │   ├── _checkpoint_utils.py          # state_dict / best-checkpoint helpers
 │   ├── _cluster.sh                   # shared cluster and environment helpers
 │   ├── diagnostics/                  # one-shot data/model diagnostics
+│   ├── figures/                      # paper figures F1–F13 and tables
 │   ├── feature_ablation/             # leave-one-feature-out ablation
 │   ├── perturbation/                 # weather-perturbation scenarios
 │   ├── pft_linearity/                # PFT-fraction linearity check
 │   ├── year_generalization/          # train/validation year splits
-│   └── memory_analysis/              # experimental protocol only
+│   └── memory_analysis/              # memory kernel (M1) + protocol
 ├── tests/                            # unit tests (unittest)
 ├── scripts/                          # hand-run diagnostics and smoke tests
 ├── legacy/                           # archived modules (removed 2027-01)
@@ -348,20 +383,29 @@ The test suite uses the standard library's `unittest` — no `pytest`
 needed. All tests are CPU-only and use no external data files.
 
 ```bash
-# Fast installation check
 python tests/test_phenonn_installation.py
-
-# Unit tests, one module at a time
-python -m unittest tests.test_evaluater
-python -m unittest tests.test_rnn
-python -m unittest tests.test_diagnostics
-
-# Or all of them at once
 python -m unittest discover -s tests
+```
+
+The full workflow:
+
+```bash
+python tests/test_phenonn_installation.py
+python -m unittest discover -s tests
+
+uvx ruff@0.5.0 check . && uvx ruff@0.5.0 format --check .
+
+cd doc && make clean && make html; cd ..
+uv build
 ```
 
 The pipeline smoke test (`bash scripts/smoke_train.sh`) goes further and
 exercises the training loop end to end on a handful of sites.
+
+The package uses lazy imports: `phenonn --version` and `phenonn --help` do not
+import torch, and `phenonn train --help` / `phenonn predict --help` use the
+lightweight parser modules. Heavy training, prediction and plotting modules are
+imported only when their names are used.
 
 ---
 
@@ -381,7 +425,7 @@ Build the documentation locally:
 
 ```bash
 cd doc
-uv pip install -e ".[docs]"
+uv pip install -e ".[full,docs]"
 make clean
 make html
 firefox build/html/index.html
@@ -394,7 +438,7 @@ firefox build/html/index.html
 Contributions are welcome. Before opening a pull request:
 
 ```bash
-uv pip install -e ".[dev,docs]"
+uv pip install -e ".[full,dev,docs]"
 pre-commit install
 pre-commit run --all-files
 python -m unittest discover -s tests
@@ -438,7 +482,7 @@ If you use PhenoNN in your research, please cite:
 
 ```bibtex
 @software{ardaneh_phenonn_2024,
-  author = {Barbu, Stefan and Ardaneh, Kazem},
+  author = {Barbu, Stefan and Ardaneh, Kazem and Carlin, Esteban},
   title  = {PhenoNN: Deep Learning for Phenology Prediction},
   year   = {2024},
   url    = {https://github.com/kardaneh/PhenoNN},
@@ -450,7 +494,7 @@ If you use PhenoNN in your research, please cite:
 
 ## Acknowledgments
 
-- CNRS / IPSL / Sorbonne University for institutional support
+- CNRS for institutional support
 - Max-Planck-Institute for Biogeochemistry Jena
 - All contributors and users of PhenoNN
 
@@ -458,10 +502,11 @@ If you use PhenoNN in your research, please cite:
 
 ## Contact
 
-- **Author**: Kazem Ardaneh
+- **Authors**: Kazem Ardaneh, Stefan Barbu, Esteban Carlin
+- **Contact**: Kazem Ardaneh
 - **Email**: kardaneh@ipsl.fr
 - **GitHub**: https://github.com/kardaneh
-- **Institution**: IPSL / CNRS / Sorbonne University
+- **Institution**: CNRS
 
 ---
 

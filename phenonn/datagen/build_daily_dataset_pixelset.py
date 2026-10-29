@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -56,8 +56,8 @@ Examples
 
     python -m phenonn.datagen.build_daily_dataset_pixelset \\
         --input_dir  /bdd/ERA5-Land/NETCDF/GLOBAL_01/hourly/FC_SF \\
-        --output_dir /leonardo_work/EUHPC_D36_053/PhenoNN/data/era5_pixelset \\
-        --selected_pixels /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/selected_pixels005_1.nc \\
+        --output_dir /path/to/data/era5_pixelset \\
+        --selected_pixels /path/to/data/pixelset1/selected_pixels005_1.nc \\
         --year_start 1981 --year_end 2025
 """
 

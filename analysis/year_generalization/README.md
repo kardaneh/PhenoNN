@@ -22,16 +22,11 @@ Run every command from the repository root after following
 [the analysis setup](../README.md#before-you-start).
 
 ```bash
-cd /home/ecarlin/PhenoNN
+cd /path/to/PhenoNN
 source .venv/bin/activate
 
-export DATA="$PWD/pixelset1"
-export RUNS="$PWD/runs"
-export RUNS_TARGET=/net/nfs/ssd1/ecarlin/phenonn/runs
-
-test -L "$RUNS" || { echo "runs/ is not a symlink; stop"; exit 1; }
-test "$(readlink -f "$RUNS")" = "$RUNS_TARGET" \
-    || { echo "runs/ points somewhere unexpected"; exit 1; }
+export DATA="${DATA:-$PWD/pixelset1}"
+export RUNS="${RUNS:-$PWD/runs}"
 
 export DATA
 export RUNS
@@ -98,7 +93,7 @@ export YEAR_SUBSET=0.25
 The experiment name is set automatically to `yeargen_<split>`. A split that
 already has a `config.json` in its run directory is skipped.
 
-On HAL, keep `YEAR_SUBSET=0.25` to fit the 120G nodes. Use `YEAR_SUBSET=0.5`
+The paper profile keeps `YEAR_SUBSET=0.25`. Use `YEAR_SUBSET=0.5`
 on Leonardo or another large-memory system. A 0.5 subset of
 `selected_pixels005_balanced.nc` needs roughly 170GB of training-feature RAM.
 
@@ -111,13 +106,13 @@ The job wrapper queues six jobs, one per split:
 
 ```bash
 export TEMP_RANK_JSON="$RANK_JSON"
-export PHENONN_SITE=hal
+export PHENONN_SITE=local
 
 bash analysis/year_generalization/jobs/submit_year_split.sh
 ```
 
 `TEMP_RANK_JSON` is exported before submission, so `--export=ALL` passes it to
-each job. On HAL the wrapper defaults to `YEAR_SUBSET=0.25` and
+each job. The wrapper defaults to `YEAR_SUBSET=0.25` and
 `PHENONN_MEM=120G`. Use `PHENONN_SITE=leonardo` for Leonardo or
 `PHENONN_SITE=local` for a local run. See
 [jobs/README.md](jobs/README.md) for dry-run and environment details.

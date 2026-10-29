@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -95,7 +95,6 @@ Usage
         --output_csv runs/exp/predictions.csv
 """
 
-import argparse
 import datetime
 import os
 from typing import Dict, List, Optional, Tuple
@@ -109,6 +108,16 @@ from torch.utils.data import DataLoader
 from phenonn.utils.config import ALL_FEATURES, PFT_FNAME, PFT_NAMES
 from phenonn.utils.logger import Logger
 from phenonn.utils.wrappers import _OBS_POSITIONS
+from phenonn.evaluation import bundle as B
+from phenonn.evaluation import metrics as M
+from phenonn.evaluation.leakage import (
+    LeakageError,
+    normalise_protocol,
+    parse_years,
+    validate_climatology_years,
+)
+from phenonn.evaluation.reproducibility import collect_run_metadata
+from phenonn.prediction.args import parse_args
 from phenonn.data.lai_dataset import (
     RamLAIDataset,
     generate_site_ids_from_range,
@@ -133,90 +142,6 @@ _OBS_DATES = [
 
 
 # ── Phase 1 — CLI ───────────────────────────────────────────────────────────
-
-
-def parse_args():
-    """
-    Parse the command-line arguments.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments.
-    """
-    p = argparse.ArgumentParser(description="PhenoNN inference")
-    p.add_argument("--checkpoint", required=True)
-    p.add_argument("--features_dir", default="")
-    p.add_argument("--target_dir", default="")
-    p.add_argument("--pft_dir", default="")
-    p.add_argument(
-        "--parent_map",
-        default="",
-        help="Optional selected_pixels01_1.nc. When set, ERA5 features are "
-        "read from the deduplicated 0.1° pixelset via each 0.05° site's "
-        "parent cell, instead of a 0.05°-indexed feature file. "
-        "Must match the --parent_map used at training.",
-    )
-    p.add_argument(
-        "--predict_sites",
-        default="val",
-        choices=["val", "train", "all", "grid", "test"],
-    )
-    p.add_argument(
-        "--selected_pixels",
-        default="",
-        help="Path to a selected_pixels*.nc. Overrides --sites and " "--predict_sites.",
-    )
-    p.add_argument(
-        "--sites",
-        default="",
-        help="Comma-separated explicit site IDs — overrides --predict_sites.",
-    )
-    p.add_argument(
-        "--n_predict_sites",
-        type=int,
-        default=0,
-        help="If > 0, random subsample of this many sites.",
-    )
-    p.add_argument(
-        "--predict_years",
-        default="",
-        help="'2015-2018', '2015,2016' or 'all'. Empty → val_years from the ckpt.",
-    )
-    p.add_argument("--row_min", type=int, default=-1)
-    p.add_argument("--row_max", type=int, default=-1)
-    p.add_argument("--col_min", type=int, default=-1)
-    p.add_argument("--col_max", type=int, default=-1)
-    p.add_argument("--output_csv", default="predictions.csv")
-    p.add_argument("--batch_size", type=int, default=64)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument(
-        "--scatter_years",
-        action="store_true",
-        help="One pred-vs-obs scatter per evaluated year, in a "
-        "`scatter_year/` sub-folder next to --output_csv.",
-    )
-    p.add_argument(
-        "--n_curves",
-        type=int,
-        default=0,
-        help="Number of per-site curves to plot in *_lai_curves_all.png. "
-        "0 = plot every site that produced predictions.",
-    )
-    p.add_argument(
-        "--ablate_features",
-        default="",
-        help="Comma list of features the model was TRAINED without. "
-        "Normally read from the checkpoint.",
-    )
-    p.add_argument(
-        "--pft_min_frac",
-        type=float,
-        default=0.05,
-        help="Show PFTs with fraction ≥ this threshold above each curve "
-        "subplot (default: 0.05 = 5%%).",
-    )
-    return p.parse_args()
 
 
 # ── Phase 2 — checkpoint ────────────────────────────────────────────────────
@@ -659,6 +584,112 @@ def resolve_years(args, train_args) -> List[int]:
     return years
 
 
+# ── Phase 9b — climatology and leakage ─────────────────────────────────────
+
+
+def resolve_climatology(
+    args,
+    ckpt: Dict,
+    train_args: Dict,
+    target_dir: str,
+    site_ids: List[str],
+    years: List[int],
+    logger: Logger,
+) -> Tuple[Optional[Dict], List[int]]:
+    """Build (or reuse) the per-site climatology used for anomaly metrics.
+
+    The years are taken from ``--clim_years`` first, then from the training
+    checkpoint's ``train_years``.  They must be a subset of the training years;
+    otherwise :class:`LeakageError` is raised unless ``--allow_leakage`` is set.
+    """
+    clim_years = parse_years(args.clim_years) or parse_years(
+        train_args.get("train_years", "")
+    )
+    train_years = parse_years(train_args.get("train_years", ""))
+    protocol = normalise_protocol(getattr(args, "protocol", "none"))
+    args.protocol = protocol
+    allow_leakage = getattr(args, "allow_leakage", False)
+
+    if getattr(args, "no_climatology", False):
+        logger.info("Climatology   : disabled by --no_climatology")
+        return None, []
+
+    clim = ckpt.get("anomaly_clim")
+    if clim:
+        # The checkpoint's climatology is authoritative: validate the years it
+        # was actually built on, not the ones requested on the command line.
+        ckpt_clim_years = parse_years(ckpt.get("clim_years") or [])
+        if ckpt_clim_years:
+            if clim_years and clim_years != ckpt_clim_years:
+                logger.warning(
+                    "Checkpoint climatology was built on "
+                    f"{min(ckpt_clim_years)}–{max(ckpt_clim_years)}; ignoring "
+                    f"--clim_years={args.clim_years!r}."
+                )
+            clim_years = ckpt_clim_years
+        else:
+            msg = (
+                "Checkpoint stores an anomaly climatology but no "
+                "clim_years, so its window cannot be checked for leakage."
+            )
+            if protocol in ("A", "B") and not allow_leakage:
+                raise LeakageError(
+                    f"{msg} Re-predict from a checkpoint written by the "
+                    "paper protocol, or pass --allow_leakage for a "
+                    "documented diagnostic run."
+                )
+            logger.warning(msg)
+        logger.info(f"Climatology   : {len(clim):,} sites from checkpoint")
+    elif clim_years:
+        clim_dir = (
+            args.clim_target_dir or train_args.get("clim_target_dir", "") or target_dir
+        )
+        logger.start_task(
+            "Building climatology",
+            f"{len(clim_years)} years × {len(site_ids):,} sites ({clim_dir})",
+        )
+        from phenonn.data.lai_dataset import compute_climatology_lookup
+
+        clim = compute_climatology_lookup(
+            target_dir=clim_dir,
+            clim_years=clim_years,
+            wanted_sites=site_ids,
+            verbose=False,
+        )
+        logger.success(f"  {len(clim):,} site climatologies built")
+    else:
+        logger.warning(
+            "No climatology years available — anomaly metrics will be skipped. "
+            "Pass --clim_years explicitly."
+        )
+        return None, []
+
+    if train_years:
+        try:
+            for w in validate_climatology_years(
+                clim_years,
+                train_years,
+                predict_years=years,
+                strict=not allow_leakage,
+            ):
+                logger.warning(w)
+        except LeakageError as exc:
+            raise LeakageError(
+                f"{exc}\nSet --allow_leakage only for a documented diagnostic run."
+            ) from exc
+    if protocol in ("A", "B"):
+        test_years = parse_years(getattr(args, "test_years", "")) or (
+            years if protocol == "B" else []
+        )
+        overlap = sorted(set(clim_years) & set(test_years))
+        if overlap and not allow_leakage:
+            raise LeakageError(
+                "anomaly climatology overlaps test years "
+                f"{overlap[0]}–{overlap[-1]} under protocol {protocol}"
+            )
+    return clim, clim_years
+
+
 # ── Phase 10 — dataset and loader ───────────────────────────────────────────
 
 
@@ -983,6 +1014,23 @@ def compute_metrics(
     )
     summary.append(f"  Overall RMSE                : {overall_rmse:.4f}")
 
+    if "lai_clim" in valid.columns and valid["lai_clim"].notna().any():
+        an = M.evaluate_predictions(
+            valid,
+            obs_col="lai_obs",
+            pred_col="lai_pred",
+            clim_col="lai_clim",
+            n_boot=0,
+        ).get("anomaly")
+        if an:
+            summary.append("")
+            summary.append("── Anomaly metrics (vs training-year climatology) ──")
+            summary.append(f"  Anomaly   R²                : {an['overall_r2']:+.4f}")
+            summary.append(f"  Anomaly RMSE                : {an['rmse']:.4f}")
+            summary.append(
+                f"  Sites beating climatology   : " f"{an['per_site']['pct_gt0']:.1f}%"
+            )
+
     if site_r2s:
         arr = np.array(site_r2s)
         n_pos = int(np.sum(arr > 0))
@@ -1103,6 +1151,8 @@ def write_outputs(
     pft_dir: str,
     years: List[int],
     logger: Logger,
+    checkpoint_meta: Optional[Dict] = None,
+    run_metadata: Optional[Dict] = None,
 ) -> None:
     """
     Write the CSV, the metrics summary, and the diagnostic plots.
@@ -1119,6 +1169,10 @@ def write_outputs(
     pft_dir : str
     years : list of int
     logger : Logger
+    checkpoint_meta : dict, optional
+        Epoch / validation metrics read from the checkpoint.
+    run_metadata : dict, optional
+        Output of :func:`collect_run_metadata`.
     """
     os.makedirs(os.path.dirname(args.output_csv) or ".", exist_ok=True)
     df.to_csv(args.output_csv, index=False)
@@ -1133,6 +1187,26 @@ def write_outputs(
 
     if valid.empty:
         return
+
+    # ── Structured paper bundle ──
+    bundle_dir = args.bundle_dir or os.path.dirname(args.output_csv) or "."
+    try:
+        B.write_prediction_bundle(
+            df,
+            valid,
+            bundle_dir,
+            predictions_file=args.output_csv,
+            n_boot=int(getattr(args, "n_bootstrap", 1000)),
+            seed=int(getattr(args, "seed", 42)),
+            checkpoint_meta=checkpoint_meta,
+            run_metadata=run_metadata,
+            metadata_name="predict_metadata.json",
+            write_phenology=not bool(getattr(args, "no_phenology_metrics", False)),
+            pheno_max_siteyears=int(getattr(args, "pheno_max_siteyears", 0)),
+            logger=logger,
+        )
+    except Exception as exc:  # pragma: no cover - defensive, keep the CSV
+        logger.warning(f"Bundle writer failed ({exc}); predictions were kept.")
 
     plot_pred_vs_obs(
         valid["lai_pred"].values,
@@ -1221,6 +1295,11 @@ def main():
         log_file=log_file,
     )
     logger.show_header("PhenoNN inference")
+    if getattr(args, "_n_curves_defaulted", False):
+        logger.warning(
+            "--n_curves not specified: defaulting to 100 site curves. "
+            "Pass --n_curves 0 to plot every site."
+        )
 
     # ── Checkpoint ──
     ckpt = load_checkpoint(args, device, logger)
@@ -1289,6 +1368,51 @@ def main():
         logger,
     )
 
+    # ── Climatology, PFT metadata and structured bundle ──
+    clim_by_site, clim_years = resolve_climatology(
+        args, ckpt, train_args, target_dir, site_ids, years, logger
+    )
+    if clim_by_site:
+        B.attach_climatology(df, clim_by_site)
+    if not args.no_pft_columns:
+        B.attach_pft_columns(df, pft_dir, PFT_NAMES)
+
+    checkpoint_meta = {
+        "checkpoint": os.path.abspath(args.checkpoint),
+        "epoch": ckpt.get("epoch"),
+        "val_loss": ckpt.get("val_loss"),
+        "val_rmse": ckpt.get("val_rmse"),
+        "val_r2": ckpt.get("val_r2"),
+        "best_epoch": ckpt.get("best_epoch"),
+        "best_val_loss": ckpt.get("best_val_loss"),
+        "best_r2_epoch": ckpt.get("best_r2_epoch"),
+        "selection_rule": "lowest validation loss",
+        "pft_mixing": ckpt.get("pft_mixing"),
+        "anomaly_mode": is_anomaly,
+        "clim_years": clim_years,
+        "protocol": normalise_protocol(getattr(args, "protocol", "none")),
+    }
+    data_paths = [
+        args.checkpoint,
+        train_args.get("stats_path", ""),
+        train_args.get("co2_path", ""),
+        train_args.get("parent_map", ""),
+        args.selected_pixels,
+    ]
+    run_metadata = collect_run_metadata(
+        args,
+        data_paths=[p for p in data_paths if p],
+        extra={
+            "stage": "predict",
+            "clim_years": clim_years,
+            "checkpoint": checkpoint_meta,
+            "predict_sites": args.predict_sites,
+            "predict_years": years,
+            "n_sites": len(site_ids),
+            "n_points": len(df),
+        },
+    )
+
     # ── Metrics ──
     summary, valid = compute_metrics(df, logger)
     if summary:
@@ -1296,7 +1420,17 @@ def main():
             logger.info(line)
 
     # ── Outputs ──
-    write_outputs(df, summary, valid, args, pft_dir, years, logger)
+    write_outputs(
+        df,
+        summary,
+        valid,
+        args,
+        pft_dir,
+        years,
+        logger,
+        checkpoint_meta=checkpoint_meta,
+        run_metadata=run_metadata,
+    )
 
     logger.success("Inference complete.")
 

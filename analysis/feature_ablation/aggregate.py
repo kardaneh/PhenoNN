@@ -152,6 +152,7 @@ def _row(label, run, r2_base, rmse_base):
     r2, rmse = _metrics(run)
     return {
         "label": label,
+        "group": label,
         "experiment": run["experiment"],
         "ablate_features": ",".join(run["mask"] or ()),
         "val_r2": r2,

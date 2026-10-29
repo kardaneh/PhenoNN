@@ -50,7 +50,12 @@ def main():
     def make(norm_stats):
         """Build the seasonal warming perturbation."""
         chans = [ChannelPerturbation(f, add=args.delta_t) for f in TEMP_CHANNELS]
-        return Perturbation(chans, norm_stats, season_ranges=SEASONS[args.season])
+        return Perturbation(
+            chans,
+            norm_stats,
+            season_ranges=SEASONS[args.season],
+            hemisphere=getattr(args, "hemisphere", "north"),
+        )
 
     R.run(
         args,
