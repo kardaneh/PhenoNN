@@ -1,7 +1,7 @@
 # Memory analysis
 
-Status: design only. This directory contains the experimental protocol, not a
-runnable analysis pipeline.
+Status: M1 (memory kernel) is runnable. The other experiments are still
+design only. The protocol is in [PROTOCOL.md](PROTOCOL.md).
 
 The study asks whether PhenoNN learns lagged weather effects and inter-annual
 legacy effects that process-based models miss. It is organized around five
@@ -19,11 +19,29 @@ The full hypotheses, metrics, success criteria, and dependencies are in
 ## Current contents
 
 ```text
-README.md      this status page
-PROTOCOL.md    experimental design
+README.md                this status page
+PROTOCOL.md              experimental design
+run_memory_kernel.py     M1 kernel + no-op / random-day / linearity controls
 ```
 
-There are no runnable scripts yet, so there are no commands to run. The
+## Run the memory kernel (M1)
+
+```bash
+python -m analysis.memory_analysis.run_memory_kernel \
+    --checkpoint runs/my_run/checkpoints/best_model.pth.tar \
+    --predict_sites val \
+    --channel Tmean --delta 2.0 \
+    --lags 0,5,10,15,30,45,60,90,120,180,270,365 \
+    --max_samples 512 \
+    --output_dir runs/memory
+```
+
+Outputs go to `runs/memory/memory_kernel/`: `memory_kernel.csv` (one row per
+lag), `memory_controls.csv` (no-op, random-day null and linearity check) and
+`memory_kernel.png`. Plot them with
+`python -m analysis.figures.make_all --memory_dir runs/memory/memory_kernel`.
+
+The remaining experiments (M2--M5) have no runnable scripts yet. The
 protocol describes the planned toolkit:
 
 - phenology metrics from the 36 dekadal LAI values,
@@ -32,9 +50,9 @@ protocol describes the planned toolkit:
 - PFT, aridity, and latitude stratifiers,
 - XGBoost and growing-degree-day contrast baselines.
 
-Do not treat this directory as a ready analysis study. When the toolkit is
-implemented, add one README command per runnable script and add the modules to
-the analysis import tests.
+Do not treat M2--M5 as ready analysis studies. When they are implemented, add
+one README command per runnable script and add the modules to the analysis
+import tests.
 
 ## Relationship to the other studies
 

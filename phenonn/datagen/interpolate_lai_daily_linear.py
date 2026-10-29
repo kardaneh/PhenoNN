@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -45,8 +45,8 @@ Examples
 ::
 
     python -m phenonn.datagen.interpolate_lai_daily_linear \\
-        --target_dir /leonardo_work/EUHPC_D36_053/PhenoNN/data/LAI_pixelset \\
-        --out_dir    /leonardo_work/EUHPC_D36_053/PhenoNN/data/LAI_daily_linear \\
+        --target_dir /path/to/data/LAI_pixelset \\
+        --out_dir    /path/to/data/LAI_daily_linear \\
         --year_start 1992 --year_end 2019
 """
 

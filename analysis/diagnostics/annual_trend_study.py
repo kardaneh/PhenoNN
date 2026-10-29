@@ -578,8 +578,10 @@ def _run_pheno_deltas(args) -> None:
     if year_filter is not None:
         df = df[df["year"].isin(year_filter)].copy()
     df = _select_sites(df, args)
-    print(f"Sites / years          : {df['site_id'].nunique():,} / "
-          f"{sorted(df['year'].unique().tolist())}")
+    print(
+        f"Sites / years          : {df['site_id'].nunique():,} / "
+        f"{sorted(df['year'].unique().tolist())}"
+    )
 
     base = compute_metrics(df, "lai_base", args.min_valid, args.min_amplitude)
     pert = compute_metrics(df, "lai_pert", args.min_valid, args.min_amplitude)

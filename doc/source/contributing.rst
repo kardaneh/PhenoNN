@@ -32,7 +32,7 @@ Development setup
 The project uses `uv <https://docs.astral.sh/uv/>`_ for packaging and
 dependency resolution.
 
-**Base install** (only what the package needs at runtime):
+**Full install** (models, training, prediction, figures):
 
 .. code-block:: bash
 
@@ -40,25 +40,25 @@ dependency resolution.
     cd PhenoNN
     uv venv
     source .venv/bin/activate
-    uv pip install -e .
+    uv pip install -e ".[full]"
 
 **Developer install** (adds ruff and pre-commit):
 
 .. code-block:: bash
 
-    uv pip install -e ".[dev]"
+    uv pip install -e ".[full,dev]"
 
 **Documentation install** (adds Sphinx and its extensions):
 
 .. code-block:: bash
 
-    uv pip install -e ".[docs]"
+    uv pip install -e ".[full,docs]"
 
 **Both**, for a full development environment:
 
 .. code-block:: bash
 
-    uv pip install -e ".[dev,docs]"
+    uv pip install -e ".[full,dev,docs]"
 
 The ``-e`` flag installs the package in editable mode: changes to the
 Python source are picked up immediately, without a reinstall. Once the
@@ -117,10 +117,10 @@ Coding conventions
 introduce syntax that requires 3.11 or later (``X | None`` is fine,
 ``typing.Self`` is not).
 
-**Style.** Formatting is handled by ``black`` (line length 100) and
-``ruff`` (see ``pyproject.toml``). Both run through ``pre-commit`` on
-every commit; run ``pre-commit run --all-files`` before opening a pull
-request to catch anything the hook did not cover.
+**Style.** Formatting is handled by ``ruff format`` and linting by
+``ruff check`` (see ``pyproject.toml``). Both run through ``pre-commit``
+on every commit; run ``pre-commit run --all-files`` before opening a
+pull request to catch anything the hook did not cover.
 
 **Docstrings.** NumPy style, as parsed by Napoleon. Every public class,
 function and method must have at least a one-line summary. Functions

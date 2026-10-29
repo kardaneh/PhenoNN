@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -15,17 +15,16 @@
 
 import math
 import os
-from typing import Dict, List, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Union
+
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import rcParams as mpl
-import mpltex
-import matplotlib.gridspec as gridspec
-import matplotlib.ticker as ticker
-import pandas as pd
-# `add_derived_features` is now an xarray helper. The few diagnostic plots
-# that need it import it lazily inside the function body to keep this
-# module light when only basic plots are needed.
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+# Matplotlib, mpltex, gridspec and ticker are imported inside the plotting
+# functions.  This keeps ``import phenonn.utils.diagnostics`` light for
+# training/prediction code that only needs ``make_history_dicts``.
 
 params = {
     "font.family": "DejaVu Sans",
@@ -48,7 +47,13 @@ params = {
     "xtick.direction": "out",
     "ytick.direction": "out",
 }
-mpl.update(params)
+
+
+def _apply_style() -> None:
+    """Apply the shared matplotlib rcParams lazily."""
+    from matplotlib import rcParams as mpl
+
+    mpl.update(params)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,6 +80,8 @@ def _compute_metrics(pred: np.ndarray, obs: np.ndarray) -> Dict[str, float]:
 
 def _save(fig, filename: str, logger=None):
     """Save a figure, create parent directories if needed, and log."""
+    import matplotlib.pyplot as plt
+
     os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
     fig.savefig(filename, bbox_inches="tight", dpi=150)
     plt.close(fig)
@@ -119,6 +126,10 @@ def plot_loss_histories(
     - Includes grid for better readability
     """
 
+    import matplotlib.pyplot as plt
+    import mpltex
+
+    _apply_style()
     epochs = np.arange(1, len(train_loss) + 1)
 
     fig = plt.figure(figsize=(8, 5))
@@ -199,6 +210,11 @@ def plot_metric_histories(
     - Includes grid for better readability
     """
 
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    import mpltex
+
+    _apply_style()
     metric_names = list(train_history.keys())
     if not metric_names:
         raise ValueError("train_history is empty — nothing to plot")
@@ -310,6 +326,10 @@ def plot_pred_vs_obs(
     a small margin, so the y=x line always appears diagonal.
     """
 
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+
+    _apply_style()
     pred = np.asarray(pred, dtype=np.float64).ravel()
     obs = np.asarray(obs, dtype=np.float64).ravel()
     mask = np.isfinite(pred) & np.isfinite(obs)
@@ -424,6 +444,10 @@ def plot_gcc_curves(
     always showing the same outlier sites.
     """
 
+    import matplotlib.pyplot as plt
+    import mpltex
+
+    _apply_style()
     # ── Compute per-site R², MAE, MSE ──
     site_metrics = {}
     for site, g in df.groupby(site_col):
@@ -591,6 +615,10 @@ def plot_gcc_curves_all(
         {site_name: r2_value} for all sites.
     """
 
+    import matplotlib.pyplot as plt
+    import mpltex
+
+    _apply_style()
     # ── Compute per-site R², MAE, MSE ──
     site_metrics = {}
     for site, g in df.groupby(site_col):

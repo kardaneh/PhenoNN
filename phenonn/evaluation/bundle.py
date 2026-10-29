@@ -8,7 +8,6 @@ climatology comparison so inference stays a thin orchestration layer.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from typing import Dict, Iterable, List, Optional
@@ -77,7 +76,9 @@ def attach_climatology(
     return df
 
 
-def _read_pft_year(pft_dir: str, year: int, wanted: Iterable[str]) -> Dict[str, np.ndarray]:
+def _read_pft_year(
+    pft_dir: str, year: int, wanted: Iterable[str]
+) -> Dict[str, np.ndarray]:
     """Read ``PFTmap_{year}.nc`` and return fractions for the wanted sites."""
     import xarray as xr
 
@@ -119,9 +120,14 @@ def attach_pft_columns(
             continue
         sites = df["site_id"].to_numpy()[positions]
         d = np.array([int(np.argmax(fracs[s])) if s in fracs else -1 for s in sites])
-        b = np.array([fracs[s][0] if s in fracs and fracs[s].size else np.nan for s in sites])
+        b = np.array(
+            [fracs[s][0] if s in fracs and fracs[s].size else np.nan for s in sites]
+        )
         p = np.array(
-            [float(np.max(fracs[s])) if s in fracs and fracs[s].size else np.nan for s in sites]
+            [
+                float(np.max(fracs[s])) if s in fracs and fracs[s].size else np.nan
+                for s in sites
+            ]
         )
         dom[positions] = d
         bare[positions] = b
@@ -167,6 +173,7 @@ def write_prediction_bundle(
     clim_col: Optional[str] = "lai_clim",
     checkpoint_meta: Optional[Dict] = None,
     run_metadata: Optional[Dict] = None,
+    metadata_name: str = "run_metadata.json",
     write_phenology: bool = True,
     pheno_max_siteyears: int = 0,
     logger=None,
@@ -243,11 +250,7 @@ def write_prediction_bundle(
             sites = np.array(sorted(valid["site_id"].unique()))
             keep_n = max(
                 1,
-                int(
-                    len(sites)
-                    * pheno_max_siteyears
-                    / max(n_sy, 1)
-                ),
+                int(len(sites) * pheno_max_siteyears / max(n_sy, 1)),
             )
             rng = np.random.default_rng(seed)
             keep = set(rng.choice(sites, size=min(keep_n, len(sites)), replace=False))
@@ -269,12 +272,10 @@ def write_prediction_bundle(
     _link_or_copy(predictions_file, os.path.join(out_dir, "predictions.csv"))
 
     if run_metadata:
-        write_json(os.path.join(out_dir, "run_metadata.json"), run_metadata)
+        write_json(os.path.join(out_dir, metadata_name), run_metadata)
 
     if logger:
         r2 = model_out.get("overall_r2", float("nan"))
         rmse = model_out.get("rmse", float("nan"))
-        logger.success(
-            f"Bundle        : {out_dir}  (R²={r2:+.4f}, RMSE={rmse:.4f})"
-        )
+        logger.success(f"Bundle        : {out_dir}  (R²={r2:+.4f}, RMSE={rmse:.4f})")
     return model_out

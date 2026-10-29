@@ -75,6 +75,7 @@ def savefig(fig, path: str) -> None:
 
 def annotate_metrics(ax, m: dict, loc: str = "upper left", fontsize: int = 10) -> None:
     """Write the headline metrics in a corner of a scatter panel."""
+
     def f(key, fmt=".4f"):
         v = m.get(key)
         try:

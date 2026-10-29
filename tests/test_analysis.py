@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -34,6 +34,7 @@ ANALYSIS_PACKAGES = [
     "analysis.diagnostics",
     "analysis.feature_ablation",
     "analysis.memory_analysis",
+    "analysis.figures",
     "analysis.perturbation",
     "analysis.pft_linearity",
     "analysis.year_generalization",
@@ -61,12 +62,19 @@ ANALYSIS_SCRIPTS = [
     "analysis.feature_ablation.run_ablate_inproc",
     "analysis.feature_ablation.smoke",
     "analysis.feature_ablation.train_ablate",
+    "analysis.figures.figures",
+    "analysis.figures.make_all",
+    "analysis.figures.registry",
+    "analysis.figures.style",
+    "analysis.figures.tables",
+    "analysis.memory_analysis.run_memory_kernel",
     "analysis.perturbation._perturb",
     "analysis.perturbation.aggregate_perturbation",
     "analysis.perturbation.drought",
     "analysis.perturbation.heatwave",
     "analysis.perturbation.run_perturbation",
     "analysis.perturbation.warming_co2",
+    "analysis.perturbation.warming_co2_sweep",
     "analysis.perturbation.winter_frost",
     "analysis.pft_linearity.compare_mixing",
     "analysis.year_generalization.rank_years_by_temp",
@@ -74,14 +82,17 @@ ANALYSIS_SCRIPTS = [
 ]
 
 STUDY_COMMAND_MODULES = [
+    "analysis.memory_analysis.run_memory_kernel",
     "analysis.perturbation.drought",
     "analysis.perturbation.heatwave",
     "analysis.perturbation.warming_co2",
+    "analysis.perturbation.warming_co2_sweep",
     "analysis.perturbation.winter_frost",
     "analysis.perturbation.aggregate_perturbation",
     "analysis.pft_linearity.compare_mixing",
     "analysis.year_generalization.rank_years_by_temp",
     "analysis.year_generalization.run_year_split",
+    "analysis.figures.make_all",
 ]
 
 # Only modules exposing parse_args; climatology_skill,

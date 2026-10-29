@@ -27,20 +27,15 @@ environment, but the `python -m` commands below expect the virtual environment
 to be active.
 
 ```bash
-cd /home/ecarlin/PhenoNN
+cd /path/to/PhenoNN
 source .venv/bin/activate
 
-export DATA="$PWD/pixelset1"
-export RUNS="$PWD/runs"
-export RUNS_TARGET=/net/nfs/ssd1/ecarlin/phenonn/runs
+export DATA="${DATA:-$PWD/pixelset1}"
+export RUNS="${RUNS:-$PWD/runs}"
 export PHENONN_ROOT="$PWD"
-export PHENONN_SITE=hal
+export PHENONN_SITE=local
 export FA_ROOT="$RUNS/feature_ablation"
 export FA_SMOKE="$RUNS/feature_ablation_smoke"
-
-test -L "$RUNS" || { echo "runs/ is not a symlink; stop"; exit 1; }
-test "$(readlink -f "$RUNS")" = "$RUNS_TARGET" \
-    || { echo "runs/ points somewhere unexpected"; exit 1; }
 
 export DATA
 export RUNS
@@ -49,8 +44,8 @@ export FA_SMOKE
 ```
 
 Use `PHENONN_SITE=leonardo` for Leonardo or `PHENONN_SITE=local` for a local
-run. The presets live in `analysis/_cluster.sh`. HAL paper runs default to
-`SUBSET=0.25` and `PHENONN_MEM=120G`; override both when using larger nodes.
+run. The presets live in `analysis/_cluster.sh`. The paper profile defaults to
+`SUBSET=0.25` and `PHENONN_MEM=120G`; override both for larger nodes.
 
 ## Runnable scripts
 
@@ -140,18 +135,18 @@ Generates the per-feature study and submits it. This is the normal entry point
 for a production feature or group sweep.
 
 ```bash
-OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=hal \
+OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=local \
     bash analysis/feature_ablation/jobs/submit_ablate.sh --study features
 ```
 
 The default profile is `paper`: AELSTM, 18 training years, 10 validation years,
-and 300 epochs. It queues the baseline and 13 ablations. On HAL the wrapper
+and 300 epochs. It queues the baseline and 13 ablations. The wrapper
 uses `SUBSET=0.25` and `PHENONN_MEM=120G` by default.
 
 Run the grouped sweep:
 
 ```bash
-OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=hal \
+OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=local \
     bash analysis/feature_ablation/jobs/submit_ablate.sh --study groups
 ```
 
@@ -165,7 +160,7 @@ PROFILE=smoke PHENONN_LOCAL=1 PHENONN_SITE=local \
 Write the jobs without submitting them:
 
 ```bash
-OUTPUT_DIR="$FA_ROOT" PHENONN_DRY_RUN=1 PHENONN_SITE=hal \
+OUTPUT_DIR="$FA_ROOT" PHENONN_DRY_RUN=1 PHENONN_SITE=local \
   bash analysis/feature_ablation/jobs/submit_ablate.sh --study features
 ```
 
@@ -177,14 +172,14 @@ Generates and submits the fixed model and size sweep. Each configuration gets a
 baseline and one ablation.
 
 ```bash
-OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=hal \
+OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=local \
     bash analysis/feature_ablation/jobs/submit_combo.sh
 ```
 
 Reuse existing baselines:
 
 ```bash
-OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=hal \
+OUTPUT_DIR="$FA_ROOT" PHENONN_SITE=local \
     bash analysis/feature_ablation/jobs/submit_combo.sh --skip-baseline
 ```
 
@@ -360,6 +355,11 @@ delta_r2 = R2(ablated) - R2(baseline)
 A negative `delta_r2` means removing the feature hurt the model, so the feature
 was useful. The more negative the value, the more important the feature. The
 plot shows `-delta_r2`, with the largest loss first.
+
+The CSV writes both `label` and `group`, so
+`analysis.figures.make_all --ablation_csv ...` consumes it directly. The
+aggregation does not compute bootstrap CIs; add `ci_low`/`ci_high` columns if a
+paired bootstrap is run separately.
 
 The aggregation also validates the stored mask:
 

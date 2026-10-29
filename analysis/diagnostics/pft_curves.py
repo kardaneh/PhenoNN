@@ -299,9 +299,7 @@ def main():
         features = features.to(device)
 
         if hasattr(model, "forward_with_pure"):
-            lai_pred_norm, lai_pure_norm, pft_real_t = model.forward_with_pure(
-                features
-            )
+            lai_pred_norm, lai_pure_norm, pft_real_t = model.forward_with_pure(features)
             if getattr(model, "daily", False) and lai_pure_norm.shape[-1] == 365:
                 pos = model.obs_positions
                 lai_pure_norm = lai_pure_norm[:, :, pos]

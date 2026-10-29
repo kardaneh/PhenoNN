@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -50,7 +50,7 @@ Examples
 Run as a module::
 
     python -m phenonn.datagen.select_pixels \\
-        --valid_dir   /leonardo_work/EUHPC_D36_053/PhenoNN/data/valid_pixels \\
+        --valid_dir   /path/to/data/valid_pixels \\
         --output_path /data/ecarlin/pixelset1/selected_pixels005_1.nc \\
         --fraction    0.1 \\
         --seed        42

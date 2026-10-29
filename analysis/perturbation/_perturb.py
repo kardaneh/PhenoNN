@@ -135,7 +135,11 @@ class ChannelPerturbation:
     """
 
     def __init__(
-        self, feature: str, add: float = 0.0, mul: float = 1.0, set_to: float | None = None
+        self,
+        feature: str,
+        add: float = 0.0,
+        mul: float = 1.0,
+        set_to: float | None = None,
     ) -> None:
         if feature not in ALL_FEATURES:
             raise SystemExit(f"unknown feature {feature!r}; not in ALL_FEATURES")
@@ -215,7 +219,9 @@ class Perturbation:
             doy_of_positions(seq_length).astype(np.float32), device=device
         ).unsqueeze(0)  # (1, L)
         lat = torch.as_tensor(lats, dtype=torch.float32, device=device).reshape(-1, 1)
-        shift = torch.where(lat < 0.0, torch.full_like(lat, 182.0), torch.zeros_like(lat))
+        shift = torch.where(
+            lat < 0.0, torch.full_like(lat, 182.0), torch.zeros_like(lat)
+        )
         doy = torch.remainder(base - 1.0 + shift, 365.0) + 1.0  # (B, L)
         if not self.season_ranges:
             return torch.ones_like(doy)

@@ -321,7 +321,10 @@ def evaluate_predictions(
     n_s = site_agg["n"].to_numpy(float)
     d_s = site_agg["sum_p"].to_numpy(float) - site_agg["sum_o"].to_numpy(float)
     sst_c = float(
-        np.sum(site_agg["sum_o2"].to_numpy(float) - site_agg["sum_o"].to_numpy(float) ** 2 / n_s)
+        np.sum(
+            site_agg["sum_o2"].to_numpy(float)
+            - site_agg["sum_o"].to_numpy(float) ** 2 / n_s
+        )
     )
     ssr_c = float(np.sum(site_agg["sum_e2"].to_numpy(float) - d_s * d_s / n_s))
     pooled["centered_r2"] = 1.0 - ssr_c / sst_c if sst_c > _EPS else float("nan")
@@ -340,7 +343,11 @@ def evaluate_predictions(
         "site_year": _summary_stats(sy_r2),
         "interannual": _summary_stats(ia_r2),
         "selection_rule": "lowest validation loss",
-        "bootstrap": {"n_boot": int(n_boot), "seed": int(seed), "scheme": "poisson-sites"},
+        "bootstrap": {
+            "n_boot": int(n_boot),
+            "seed": int(seed),
+            "scheme": "poisson-sites",
+        },
     }
 
     # ── Anomaly metrics ──
@@ -349,7 +356,6 @@ def evaluate_predictions(
         if not a.empty:
             oa = a[obs_col].to_numpy(float) - a[clim_col].to_numpy(float)
             pa = a[pred_col].to_numpy(float) - a[clim_col].to_numpy(float)
-            e = pa - oa
             anom_site = pd.DataFrame(
                 {
                     site_col: a[site_col].to_numpy(),
@@ -391,9 +397,7 @@ def evaluate_predictions(
             out["anomaly"] = None
 
     # ── Bootstrap CIs ──
-    out["ci95"] = _bootstrap_pooled(
-        site_agg, n_boot=n_boot, seed=seed, site_r2=site_r2
-    )
+    out["ci95"] = _bootstrap_pooled(site_agg, n_boot=n_boot, seed=seed, site_r2=site_r2)
 
     # ── Per-site / per-site-year tables are attached for convenience ──
     out["_site_agg"] = site_agg
@@ -538,7 +542,9 @@ def sos_eos_curve(
         eos = float(d[imax + falling[-1]]) if falling.size else float("nan")
         out[f"sos_{tag}"] = sos
         out[f"eos_{tag}"] = eos
-        out[f"los_{tag}"] = eos - sos if np.isfinite(sos) and np.isfinite(eos) else float("nan")
+        out[f"los_{tag}"] = (
+            eos - sos if np.isfinite(sos) and np.isfinite(eos) else float("nan")
+        )
     return out
 
 

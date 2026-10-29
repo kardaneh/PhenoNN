@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -42,11 +42,11 @@ Examples
 ::
 
     python -m phenonn.datagen.rebalance_spatial \\
-        --reference /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/all_pixels_selected.nc \\
-        --target    /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/selected_pixels005_1.nc \\
+        --reference /path/to/data/pixelset1/all_pixels_selected.nc \\
+        --target    /path/to/data/pixelset1/selected_pixels005_1.nc \\
         --block_deg 10 --target_total 1000000 \\
-        --output    /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/selected_pixels005_balanced.nc \\
-        --report_csv /leonardo_work/EUHPC_D36_053/PhenoNN/data/pixelset1/rebalance_blocks.csv \\
+        --output    /path/to/data/pixelset1/selected_pixels005_balanced.nc \\
+        --report_csv /path/to/data/pixelset1/rebalance_blocks.csv \\
         --seed 42
 """
 

@@ -61,7 +61,17 @@ echo "Curves cap    : $N_CURVES"
 # comes from the checkpoint.
 cd "$REPO"
 
-python -m phenonn.prediction.predict \
+PYTHON="${PYTHON:-$REPO/.venv/bin/python}"
+if [[ ! -x "$PYTHON" ]]; then
+    PYTHON="python"
+fi
+
+# Keep the smoke test inside a 1 GB per-process cgroup on shared login nodes.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+
+"$PYTHON" -m phenonn.prediction.predict \
     --checkpoint      "$CKPT" \
     --predict_sites   val \
     --n_predict_sites "$N_SITES" \

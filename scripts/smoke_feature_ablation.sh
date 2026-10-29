@@ -29,5 +29,10 @@ phenonn_require_data \
 FEATURES="${*:-Tmean,tp_sum}"
 FEATURES="${FEATURES// /,}"
 
+# Keep the smoke test inside a 1 GB per-process cgroup on shared login nodes.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+
 exec "$PHENONN_PYTHON" -m analysis.feature_ablation.smoke \
     --project "$PROJECT" --data "$DATA" --features "$FEATURES"

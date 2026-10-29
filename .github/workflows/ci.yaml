@@ -27,35 +27,30 @@ jobs:
         run: |
           uv venv
           source .venv/bin/activate
-          uv pip install -e .[ci,dev]
+          uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install -e ".[full,dev,docs]"
 
       - name: Run pre-commit
         run: |
           source .venv/bin/activate
           pre-commit run --all-files
 
-      - name: Run unit tests
+      - name: Installation check
         run: |
           source .venv/bin/activate
-          python -m tests.test_phenonn_installation
-          python -m unittest tests.test_datagen_installation
-          python -m unittest tests.test_datagen_routes
-          python -m unittest tests.test_aelstm
-          python -m unittest tests.test_analysis
-          python -m unittest tests.test_bitransformer
-          python -m unittest tests.test_cli
-          python -m unittest tests.test_diagnostics
-          python -m unittest tests.test_evaluater
-          python -m unittest tests.test_feature_ablation
-          python -m unittest tests.test_logger
-          python -m unittest tests.test_model_loader
-          python -m unittest tests.test_model_utils
-          python -m unittest tests.test_rnn
-          python -m unittest tests.test_transformer
-          python -m unittest tests.test_transformerbis
-          python -m unittest tests.test_transformer_extra
-          python -m unittest tests.test_utils
-          python -m unittest tests.test_wrappers
+          python tests/test_phenonn_installation.py
+
+      - name: Unit tests
+        run: |
+          source .venv/bin/activate
+          python -m unittest discover -s tests
+
+      - name: Documentation build
+        run: |
+          source .venv/bin/activate
+          cd doc && make clean && make html
 
       - name: Check package builds
-        run: uv build
+        run: |
+          source .venv/bin/activate
+          uv build

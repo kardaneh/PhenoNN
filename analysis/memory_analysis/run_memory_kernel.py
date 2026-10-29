@@ -23,7 +23,6 @@ import os
 
 import numpy as np
 import pandas as pd
-import torch
 from torch.utils.data import DataLoader, Subset
 
 from analysis.perturbation import run_perturbation as R
@@ -38,7 +37,9 @@ def parse_args():
     )
     R.add_common_args(p)
     p.add_argument("--channel", default="Tmean", help="Channel to perturb.")
-    p.add_argument("--delta", type=float, default=2.0, help="Impulse amplitude (physical units).")
+    p.add_argument(
+        "--delta", type=float, default=2.0, help="Impulse amplitude (physical units)."
+    )
     p.add_argument(
         "--lags",
         default="0,5,10,15,30,45,60,90,120,180,270,365",
@@ -110,11 +111,7 @@ def _subset_loader(ctx, max_samples: int, seed: int):
         shuffle=False,
         num_workers=0,
     )
-    lats = (
-        None
-        if ctx.lat_by_sample is None
-        else np.asarray(ctx.lat_by_sample)[indices]
-    )
+    lats = None if ctx.lat_by_sample is None else np.asarray(ctx.lat_by_sample)[indices]
     return loader, indices, lats
 
 
@@ -169,9 +166,7 @@ def main():
         )
         mean_d, abs_d = _response(base, pert)
         abs_d = abs_d[np.isfinite(abs_d)]
-        lo, hi = (
-            np.percentile(abs_d, [2.5, 97.5]) if abs_d.size else (np.nan, np.nan)
-        )
+        lo, hi = np.percentile(abs_d, [2.5, 97.5]) if abs_d.size else (np.nan, np.nan)
         rows.append(
             {
                 "lag_days": int(lag),

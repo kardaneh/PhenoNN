@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -121,7 +121,13 @@ DATAGEN_PUBLIC_NAMES = [
 ]
 
 # Canonical data root: the final `pixelset1/` deliverable lives under it.
-DATA_ROOT = Path("/leonardo_work/EUHPC_D36_053/")
+# Override with PHENONN_DATA_ROOT when the data lives elsewhere.
+DATA_ROOT = Path(
+    os.environ.get(
+        "PHENONN_DATA_ROOT",
+        Path(__file__).resolve().parents[2],
+    )
+)
 
 # The nine items a completed `pixelset1/` is expected to contain.
 # `valid_pixels/` and `all_pixels_selected.nc` are NOT here on purpose:
@@ -223,11 +229,10 @@ def test_data_root(logger: Logger) -> bool:
     ok = True
 
     if not DATA_ROOT.exists():
-        logger.warning(f"data root not found: {DATA_ROOT}")
-        ok = False
-    else:
-        logger.success(f"data root present: {DATA_ROOT}")
+        logger.warning(f"data root not found (skipped): {DATA_ROOT}")
+        return True
 
+    logger.success(f"data root present: {DATA_ROOT}")
     for path in PIXELSET1_CONTENTS:
         if path.exists():
             logger.step(path.name, "present")

@@ -6,24 +6,17 @@ installed `phenonn` package.
 Set the data directory before running them:
 
 ```bash
-cd /home/ecarlin/PhenoNN
+cd /path/to/PhenoNN
 source .venv/bin/activate
 
-export DATA="$PWD/pixelset1"
-export RUNS="$PWD/runs"
-export RUNS_TARGET=/net/nfs/ssd1/ecarlin/phenonn/runs
-
-test -L "$RUNS" || { echo "runs/ is not a symlink; stop"; exit 1; }
-test "$(readlink -f "$RUNS")" = "$RUNS_TARGET" \
-    || { echo "runs/ points somewhere unexpected"; exit 1; }
-
-export DATA
-export RUNS
+export DATA="${DATA:-$PWD/pixelset1}"
+export RUNS="${RUNS:-$PWD/runs}"
 ```
 
-If `$DATA` is not set, the scripts look for `<repo>/pixelset1` and then
-`<repo>/../pixelset1`. Keep `runs/` as a symlink to SSD-backed storage; the
-repository ignores the link itself.
+`$DATA` must contain the pixelset files described in the main README. The
+scripts fall back to `<repo>/pixelset1` and then `<repo>/../pixelset1` when
+`$DATA` is unset. `runs/` may be a symlink to faster storage; the repository
+ignores the link itself.
 
 ## `smoke_train.sh`
 

@@ -16,11 +16,14 @@ from typing import Iterable, Optional, Sequence
 
 __all__ = [
     "LeakageError",
+    "PROTOCOLS",
+    "normalise_protocol",
     "parse_years",
     "overlap",
     "validate_split",
     "validate_normalisation_years",
     "validate_climatology_years",
+    "reconcile_resumed_clim_years",
 ]
 
 PROTOCOLS = ("A", "B", "none")
@@ -28,6 +31,54 @@ PROTOCOLS = ("A", "B", "none")
 
 class LeakageError(ValueError):
     """Raised when a configuration leaks validation or test years."""
+
+
+def normalise_protocol(protocol) -> str:
+    """Return the canonical name of a split protocol.
+
+    The three accepted protocols are defined in ``PROTOCOL.md``:
+
+    ``A``
+        Reproduction split: train 1992--2009, validation and test
+        2010--2019.  Validation and test overlap by design because the
+        report used one decade for both early stopping and reporting.
+        This is a reproduction split, not an unbiased headline.
+    ``B``
+        Paper split: train 1992--2006, validation 2007--2009, test
+        2010--2019.  The three sets are disjoint, so test metrics are
+        unbiased.
+    ``none``
+        Ad-hoc split.  The leakage checks still run, but no protocol
+        specific overlap rule is applied.
+
+    Parameters
+    ----------
+    protocol : str or None
+        Protocol name.  Matching is case-insensitive and surrounding
+        whitespace is ignored.  ``None`` and the empty string map to
+        ``"none"``.
+
+    Returns
+    -------
+    str
+        ``"A"``, ``"B"`` or ``"none"``.
+
+    Raises
+    ------
+    ValueError
+        If ``protocol`` is not one of the accepted names.
+    """
+    if protocol is None:
+        return "none"
+    value = str(protocol).strip()
+    if not value:
+        return "none"
+    lowered = value.lower()
+    if lowered == "none":
+        return "none"
+    if lowered in ("a", "b"):
+        return lowered.upper()
+    raise ValueError(f"protocol must be one of {PROTOCOLS}, got {protocol!r}")
 
 
 def parse_years(spec) -> list:
@@ -79,6 +130,7 @@ def validate_split(
         validation decade, because the report used the same decade for early
         stopping and reporting.
     protocol : {"A", "B", "none"}
+        Case-insensitive; see :func:`normalise_protocol`.
     strict : bool
         Raise :class:`LeakageError` on violations.  When False, return the
         messages instead.
@@ -89,9 +141,7 @@ def validate_split(
         Warnings that do not invalidate the split (for example Protocol A's
         deliberate validation/test overlap).
     """
-    protocol = str(protocol).upper()
-    if protocol not in PROTOCOLS:
-        raise ValueError(f"protocol must be one of {PROTOCOLS}, got {protocol!r}")
+    protocol = normalise_protocol(protocol)
 
     problems = []
     warnings = []
@@ -104,9 +154,7 @@ def validate_split(
     if not val:
         problems.append("validation years are empty")
     if overlap(train, val):
-        problems.append(
-            f"train ∩ val = {_fmt(overlap(train, val))} (must be empty)"
-        )
+        problems.append(f"train ∩ val = {_fmt(overlap(train, val))} (must be empty)")
 
     if protocol == "B":
         if not test:
@@ -200,3 +248,43 @@ def validate_climatology_years(
                 "for reported test metrics"
             )
     return warnings
+
+
+def reconcile_resumed_clim_years(args, explicit, logger) -> None:
+    """Drop a stored climatology window that would leak non-training years.
+
+    Checkpoints written before the paper protocol stored the old
+    ``--clim_years 1992-2010`` default.  Resuming such a run would merge that
+    value back over the new empty default and then fail the leakage check,
+    because 2010 is a validation/test year in Protocol A.  Only values that
+    came from the checkpoint are reconciled; an explicit CLI value is left
+    alone so the strict check can reject it.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Resolved arguments; ``clim_years`` is updated in place.
+    explicit : set of str
+        Names the user wrote on the command line.
+    logger : object
+        Logger with a ``warning`` method.
+    """
+    if not getattr(args, "anomaly_mode", False):
+        return
+    if "clim_years" in explicit:
+        return
+    stored = parse_years(getattr(args, "clim_years", ""))
+    if not stored:
+        return
+    train = parse_years(getattr(args, "train_years", ""))
+    leaked = sorted(set(stored) - set(train))
+    if not leaked:
+        return
+    fallback = getattr(args, "train_years", "")
+    logger.warning(
+        "Stored --clim_years "
+        f"{min(stored)}-{max(stored)} includes non-training years "
+        f"{min(leaked)}-{max(leaked)}; rebuilding the anomaly climatology from "
+        f"--train_years ({fallback}) to avoid leakage."
+    )
+    args.clim_years = fallback

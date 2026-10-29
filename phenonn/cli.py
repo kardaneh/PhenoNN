@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -64,6 +64,14 @@ def _dispatch(module_path: str, argv: list) -> int:
     return 0
 
 
+def _dispatch_help(module_path: str, argv: list) -> None:
+    """Print a subcommand's help without importing the heavy entry point."""
+    import importlib
+
+    parse_args = importlib.import_module(module_path).parse_args
+    parse_args(argv)
+
+
 def main() -> int:
     if "--version" in sys.argv or "-V" in sys.argv:
         print(f"phenonn {__version__}")
@@ -77,8 +85,12 @@ def main() -> int:
     subcommand_argv = [sys.argv[0]] + sys.argv[2:]
 
     if command == "train":
+        if any(arg in ("-h", "--help") for arg in subcommand_argv[1:]):
+            _dispatch_help("phenonn.training.args", subcommand_argv[1:])
         return _dispatch("phenonn.training.train_full_ram", subcommand_argv)
     if command == "predict":
+        if any(arg in ("-h", "--help") for arg in subcommand_argv[1:]):
+            _dispatch_help("phenonn.prediction.args", subcommand_argv[1:])
         return _dispatch("phenonn.prediction.predict", subcommand_argv)
 
     print(f"Unknown command: {command}", file=sys.stderr)

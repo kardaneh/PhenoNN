@@ -100,9 +100,7 @@ def main():
             factor = 2.0 ** (args.delta_t / 3.0)
             chans.append(ChannelPerturbation("co2", mul=factor))
         elif args.co2_mode == "detrend":
-            chans.append(
-                ChannelPerturbation("co2", set_to=args.co2_reference_ppm)
-            )
+            chans.append(ChannelPerturbation("co2", set_to=args.co2_reference_ppm))
         return Perturbation(
             chans,
             norm_stats,

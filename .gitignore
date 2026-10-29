@@ -199,3 +199,8 @@ PhenoNN Cleanup*.md
 PROTOCOL.md
 /PROTOCOL.md
 Rapport_de_stage_4A__Copy_ (8).pdf
+
+# Local analysis outputs and private cluster jobs
+paper/figures/
+analysis/figures/figure_choices.json
+analysis/paper_runs/

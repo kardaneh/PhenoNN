@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List
 
 import pandas as pd
 
@@ -35,6 +35,7 @@ class Run:
     metrics: Dict = field(default_factory=dict)
     metadata: Dict = field(default_factory=dict)
     config: Dict = field(default_factory=dict)
+    prediction_metadata: Dict = field(default_factory=dict)
 
     @property
     def model_type(self) -> str:
@@ -45,6 +46,14 @@ class Run:
         return ""
 
     @property
+    def model_label(self) -> str:
+        """Human-facing architecture name used by the paper tables."""
+        model = self.model_type
+        if model in ("bitransformer_v2", "bittransformer_v2"):
+            return "bitransformer"
+        return model or self.name
+
+    @property
     def seed(self):
         for src in (self.config, self.metadata.get("config", {})):
             if src.get("seed") is not None:
@@ -52,8 +61,40 @@ class Run:
         return None
 
     @property
+    def best_epoch(self):
+        """Best validation epoch, if the training metadata recorded it."""
+        for src in (self.metadata, self.metrics, self.config):
+            value = src.get("best_epoch")
+            if value is not None:
+                return value
+        return None
+
+    @property
+    def prediction_sites(self):
+        """Site pool used to write ``predictions.csv``, if recorded."""
+        return self.prediction_metadata.get("predict_sites")
+
+    @property
+    def prediction_years(self):
+        """Years used to write ``predictions.csv``, if recorded."""
+        return self.prediction_metadata.get("predict_years")
+
+    @property
+    def climatology(self) -> Dict:
+        """Metrics of the training-year climatology for this bundle."""
+        return load_json(self.file("climatology_metrics.json"))
+
+    @property
     def protocol(self):
-        return self.metadata.get("protocol") or self.config.get("protocol")
+        """Canonical split protocol, or ``None`` for pre-protocol runs."""
+        raw = self.metadata.get("protocol") or self.config.get("protocol")
+        if raw is None:
+            return None
+        # Imported lazily so the figure package stays usable without the
+        # training stack.
+        from phenonn.evaluation.leakage import normalise_protocol
+
+        return normalise_protocol(raw)
 
     def file(self, name: str) -> str:
         return os.path.join(self.directory, name)
@@ -81,8 +122,17 @@ def discover_runs(root: str) -> List[Run]:
         metrics = load_json(os.path.join(dirpath, "metrics.json"))
         metadata = load_json(os.path.join(dirpath, "run_metadata.json"))
         config = load_json(os.path.join(dirpath, "config.json"))
-        runs.append(Run(name=name, directory=dirpath, metrics=metrics,
-                        metadata=metadata, config=config))
+        prediction_metadata = load_json(os.path.join(dirpath, "predict_metadata.json"))
+        runs.append(
+            Run(
+                name=name,
+                directory=dirpath,
+                metrics=metrics,
+                metadata=metadata,
+                config=config,
+                prediction_metadata=prediction_metadata,
+            )
+        )
     runs.sort(key=lambda r: (r.model_type, r.name))
     return runs
 
@@ -112,9 +162,7 @@ class Registry:
             return matches[0]
         if not matches:
             raise KeyError(f"no run matching {name!r} in {len(self.runs)} runs")
-        raise KeyError(
-            f"{name!r} is ambiguous: {[r.name for r in matches]}"
-        )
+        raise KeyError(f"{name!r} is ambiguous: {[r.name for r in matches]}")
 
     def by_model(self, model: str) -> List[Run]:
         model = model.lower()

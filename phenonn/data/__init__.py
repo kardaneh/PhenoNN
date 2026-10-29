@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -30,19 +30,7 @@ Daily-LAI constants
     LAI_DAILY_FNAME, N_DAYS_YEAR
 """
 
-from .lai_dataset import (
-    RamLAIDataset,
-    compute_climatology_lookup,
-    list_valid_sites,
-    load_co2_lut,
-    load_parent01_map,
-    load_selected_pixels,
-    encode_site_id,
-    decode_site_id,
-    generate_site_ids_from_range,
-    LAI_DAILY_FNAME,
-    N_DAYS_YEAR,
-)
+import importlib
 
 __all__ = [
     # Datasets
@@ -62,3 +50,20 @@ __all__ = [
     "LAI_DAILY_FNAME",
     "N_DAYS_YEAR",
 ]
+
+_LAZY_ATTRS = {name: ("phenonn.data.lai_dataset", name) for name in __all__}
+
+
+def __getattr__(name):
+    """PEP 562 lazy access for the dataset helpers."""
+    try:
+        module_name, attribute = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

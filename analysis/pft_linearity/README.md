@@ -22,16 +22,11 @@ Run every command from the repository root after following
 [the analysis setup](../README.md#before-you-start).
 
 ```bash
-cd /home/ecarlin/PhenoNN
+cd /path/to/PhenoNN
 source .venv/bin/activate
 
-export DATA="$PWD/pixelset1"
-export RUNS="$PWD/runs"
-export RUNS_TARGET=/net/nfs/ssd1/ecarlin/phenonn/runs
-
-test -L "$RUNS" || { echo "runs/ is not a symlink; stop"; exit 1; }
-test "$(readlink -f "$RUNS")" = "$RUNS_TARGET" \
-    || { echo "runs/ points somewhere unexpected"; exit 1; }
+export DATA="${DATA:-$PWD/pixelset1}"
+export RUNS="${RUNS:-$PWD/runs}"
 
 export DATA
 export RUNS

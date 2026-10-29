@@ -73,6 +73,17 @@ Data arguments
 ``--parent_map``
     Override the 0.05°→0.1° parent map path from the checkpoint.
 
+Leakage checks
+--------------
+
+``--protocol {A,B,none}`` (case-insensitive) and ``--test_years`` enable the
+same split checks as training. Under Protocol B the predictor refuses an
+anomaly climatology that overlaps the test years. A checkpoint written before
+the protocol support may store a climatology without ``clim_years``; that
+window cannot be verified, so it raises under Protocol A/B unless
+``--allow_leakage`` is set. Use ``--allow_leakage`` only for a documented
+diagnostic, never for reported test metrics.
+
 Ablation replay
 ---------------
 
@@ -116,7 +127,9 @@ The predictor writes several files next to ``--output_csv``:
 
 ``<output_csv stem>_lai_curves_all.png``
     Grid of per-site curves, sorted by R². Each subplot lists the
-    dominant PFTs of the site when the PFT file is available.
+    dominant PFTs of the site when the PFT file is available. By
+    default 100 sites are shown; pass ``--n_curves 0`` to plot every
+    site, or another value to change the cap.
 
 Metrics
 -------

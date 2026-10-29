@@ -45,15 +45,12 @@ def sha256_file(path: str, chunk: int = 1 << 20) -> str:
 def git_commit(cwd: Optional[str] = None) -> str:
     """Return the current commit hash, or ``""`` outside a git repository."""
     try:
-        return (
-            subprocess.check_output(
-                ["git", "rev-parse", "HEAD"],
-                cwd=cwd,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            .strip()
-        )
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
     except Exception:
         return ""
 

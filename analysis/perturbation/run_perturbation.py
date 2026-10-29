@@ -291,6 +291,8 @@ def load_model_and_data(args):
             "ablate_ch": abl_ch if abl_feats else [],
             "lat_by_sample": lat_by_sample,
             "is_daily": bool(train_args.get("daily_lai", False)),
+            "co2_lut": co2_lut,
+            "train_args": train_args,
         }
     )
 
@@ -385,24 +387,40 @@ def _to_physical(pred_raw: np.ndarray, ctx, site_ids) -> np.ndarray:
     return pred_raw
 
 
-def run(args, make_perturbation, scenario: str, description: str = "") -> None:
-    """Run baseline and perturbed inference and write the result files.
+def run_from_context(
+    ctx,
+    args,
+    perturbation,
+    scenario: str,
+    description: str = "",
+    write_outputs: bool = True,
+) -> pd.DataFrame:
+    """Run baseline and perturbed inference with an already loaded context.
 
     Parameters
     ----------
+    ctx : EasyDict
+        Output of :func:`load_model_and_data`: model, dataset, loader,
+        normalisation statistics and ablation hooks.
     args : argparse.Namespace
-        Parsed scenario arguments.
-    make_perturbation : callable
-        Factory that receives ``norm_stats`` and returns a ``Perturbation``. The
-        factory is needed because normalization statistics are loaded with the
-        checkpoint.
+        Parsed scenario arguments.  ``output_dir`` is only used when
+        ``write_outputs`` is true.
+    perturbation : Perturbation
+        Perturbation to install on the model input.
     scenario : str
-        Scenario name used for the output subdirectory.
+        Scenario name used for the output subdirectory and summary.
     description : str, optional
         Human-readable description written to the summary.
+    write_outputs : bool
+        When true, write ``deltas.csv``, ``summary.txt`` and the two plots
+        under ``<output_dir>/<scenario>/``.  Set false for sweeps that only
+        need the returned table.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Per-site, per-year, per-dekad baseline and perturbed LAI.
     """
-    ctx = load_model_and_data(args)
-    perturbation = make_perturbation(ctx.norm_stats)
     print(f"\nScenario      : {scenario}")
     print(f"Perturbation  : {perturbation.describe()}")
 
@@ -462,6 +480,9 @@ def run(args, make_perturbation, scenario: str, description: str = "") -> None:
             )
     df = pd.DataFrame(rows)
 
+    if not write_outputs:
+        return df
+
     out_dir = os.path.join(args.output_dir, scenario)
     os.makedirs(out_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, "deltas.csv")
@@ -471,6 +492,28 @@ def run(args, make_perturbation, scenario: str, description: str = "") -> None:
     _write_summary(df, out_dir, scenario, description, perturbation)
     _plot(df, out_dir, scenario)
     print("Done.")
+    return df
+
+
+def run(args, make_perturbation, scenario: str, description: str = "") -> None:
+    """Run baseline and perturbed inference and write the result files.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed scenario arguments.
+    make_perturbation : callable
+        Factory that receives ``norm_stats`` and returns a ``Perturbation``. The
+        factory is needed because normalization statistics are loaded with the
+        checkpoint.
+    scenario : str
+        Scenario name used for the output subdirectory.
+    description : str, optional
+        Human-readable description written to the summary.
+    """
+    ctx = load_model_and_data(args)
+    perturbation = make_perturbation(ctx.norm_stats)
+    run_from_context(ctx, args, perturbation, scenario, description)
 
 
 def _write_summary(df, out_dir, scenario, description, perturbation) -> None:

@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Stefan Barbu, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Stefan Barbu, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
@@ -34,16 +34,7 @@ The legacy CSV trainers (``run_training``, ``run_training_flat``,
 ``run_training_big``) have been moved to ``legacy/training/``.
 """
 
-from .train_full_ram import (
-    SharedData,
-    load_shared,
-    train_one_config,
-    main,
-    parse_args,
-    parse_year_list,
-    train_one_epoch,
-    validate,
-)
+import importlib
 
 __all__ = [
     "SharedData",
@@ -55,3 +46,20 @@ __all__ = [
     "train_one_epoch",
     "validate",
 ]
+
+_LAZY_ATTRS = {name: ("phenonn.training.train_full_ram", name) for name in __all__}
+
+
+def __getattr__(name):
+    """PEP 562 lazy access for the training pipeline."""
+    try:
+        module_name, attribute = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

@@ -65,6 +65,30 @@ Year splits
    * - ``--val_years``
      - e.g. ``2010-2019``. Must be disjoint from train years when
        ``--val_fraction_of_grid`` is at least 100 (overlap mode).
+   * - ``--test_years``
+     - Held-out decade, e.g. ``2010-2019``. Required by Protocol B and
+       used only for leakage checks, never for early stopping.
+   * - ``--protocol``
+     - ``A`` (reproduction), ``B`` (unbiased paper split) or ``none``
+       (ad-hoc). Case-insensitive.
+   * - ``--norm_years``
+     - Years used to build ``--stats_path``. Must be a subset of
+       ``--train_years``.
+   * - ``--clim_years``
+     - Years used for the anomaly climatology. Defaults to
+       ``--train_years``; may not include validation or test years.
+   * - ``--allow_leakage``
+     - Downgrade the leakage errors to warnings. Diagnostic runs only.
+   * - ``--selection_rule``
+     - ``val_loss`` (paper default) or ``val_r2`` for the diagnostic
+       best-R2 checkpoint.
+
+Protocol A (reproduction) trains on 1992--2009 and reports on 2010--2019,
+so validation and test share a decade and the reported scores are
+optimistic. Protocol B (unbiased) trains on 1992--2006, validates on
+2007--2009 and tests on 2010--2019; the three sets are disjoint. Use
+Protocol B for headline claims and Protocol A only to compare with the
+original report.
 
 Site pool and sampling
 ----------------------
@@ -306,13 +330,13 @@ A minimal run on CPU (useful as a smoke test)::
 A realistic cluster run::
 
     python -m phenonn.training.train_full_ram \
-        --features_dir /leonardo_work/.../era5_pixelset \
-        --target_dir   /leonardo_work/.../LAI_pixelset \
-        --pft_dir      /leonardo_work/.../PFT_pixelset \
-        --selected_pixels /leonardo_work/.../selected_pixels005_balanced.nc \
-        --parent_map   /leonardo_work/.../selected_pixels01_1.nc \
-        --stats_path   /leonardo_work/.../norm_stats_1992_2019.json \
-        --co2_path     /leonardo_work/.../CO2_1700_2023_TRENDYv2024.txt \
+        --features_dir /path/to/era5_pixelset \
+        --target_dir   /path/to/LAI_pixelset \
+        --pft_dir      /path/to/PFT_pixelset \
+        --selected_pixels /path/to/selected_pixels005_balanced.nc \
+        --parent_map   /path/to/selected_pixels01_1.nc \
+        --stats_path   /path/to/norm_stats_1992_2019.json \
+        --co2_path     /path/to/CO2_1700_2023_TRENDYv2024.txt \
         --train_years 1992-2009 --val_years 2010-2019 \
         --val_fraction_of_grid 100 \
         --n_sites_per_epoch 250000 --n_years_per_epoch 30 --n_val_sites 50000 \

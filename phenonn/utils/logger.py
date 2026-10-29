@@ -1,5 +1,5 @@
-# Copyright 2026 IPSL / CNRS / Sorbonne University
-# Authors: Shivamshan Sivanesan, Kazem Ardaneh
+# Copyright 2026 CNRS
+# Authors: Shivamshan Sivanesan, Kazem Ardaneh, Esteban Carlin
 #
 # This work is licensed under the Creative Commons
 # Attribution-NonCommercial-ShareAlike 4.0 International License.
