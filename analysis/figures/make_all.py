@@ -27,6 +27,11 @@ def parse_args():
     p.add_argument("--runs_dir", default="runs", help="Tree to scan for metrics.json.")
     p.add_argument("--out_dir", default="runs/figures")
     p.add_argument("--run", default="", help="Run name or substring for F1–F4.")
+    p.add_argument(
+        "--table_runs",
+        default="",
+        help="Comma-separated runs for F5–F7; default: all in --runs_dir.",
+    )
     p.add_argument("--figures", default="all", help="'all' or comma list F1,F2,...")
     p.add_argument(
         "--ablation_csv", default="", help="CSV with group, delta_r2, ci_low, ci_high."
@@ -38,6 +43,11 @@ def parse_args():
         "--warming_csv", default="", help="CSV for F10 (delta_t, co2_mode, ...)."
     )
     p.add_argument("--pft_csv", default="", help="Long CSV from pft_curves.py.")
+    p.add_argument(
+        "--pft_dir",
+        default="",
+        help="PFTmap_{year}.nc folder for F2; default: run config pft_dir.",
+    )
     p.add_argument("--memory_dir", default="", help="Directory with memory_kernel.csv.")
     p.add_argument(
         "--choices",
@@ -108,6 +118,12 @@ def main():
     wanted = _wanted(args.figures)
     registry = Registry.from_dir(args.runs_dir)
     print(f"Registry: {len(registry)} run(s) under {args.runs_dir}")
+    if args.table_runs:
+        names = [s.strip() for s in args.table_runs.split(",") if s.strip()]
+        table_registry = Registry([registry.get(name) for name in names])
+        print("Table runs: " + ", ".join(r.name for r in table_registry))
+    else:
+        table_registry = registry
     if len(registry):
         run = registry.get(args.run) if args.run else registry.runs[0]
         print(f"Primary run: {run.name} ({run.directory})")
@@ -124,6 +140,7 @@ def main():
         if args.pft_csv and os.path.exists(args.pft_csv)
         else None
     )
+    pft_dir = args.pft_dir or (run.config.get("pft_dir", "") if run else "")
 
     # ── F1–F4: prediction-level figures ──
     if run is None:
@@ -158,6 +175,7 @@ def main():
                     out("F2_site_years"),
                     choices=choices.get("F2"),
                     pft_df=pft_df,
+                    pft_dir=pft_dir,
                 )
             if "F3" in wanted and {"obs_anom", "pred_anom"}.issubset(pred.columns):
                 F.plot_paper_anomaly_scatter(pred, run.metrics, out("F3_anomaly"))
@@ -178,11 +196,11 @@ def main():
                 _skip(name, "no metrics.json in --runs_dir")
     else:
         if "F5" in wanted:
-            T.architecture_table(registry, out("F5_architecture.tex"))
+            T.architecture_table(table_registry, out("F5_architecture.tex"))
         if "F6" in wanted:
-            T.model_vs_climatology_table(registry, out("F6_climatology.tex"))
+            T.model_vs_climatology_table(table_registry, out("F6_climatology.tex"))
         if "F7" in wanted:
-            T.anomaly_table(registry, out("F7_anomaly.tex"))
+            T.anomaly_table(table_registry, out("F7_anomaly.tex"))
 
     # ── F8: ablation ──
     if "F8" in wanted:
@@ -242,6 +260,12 @@ def main():
                 )
             F.plot_paper_loss_curves(
                 histories, out("F12_loss_curves"), early_stop_epochs=stops
+            )
+            F.plot_paper_loss_curves(
+                histories,
+                out("F12_loss_curves_log"),
+                early_stop_epochs=stops,
+                log_scale=True,
             )
         else:
             _skip("F12", "no history.csv for LSTM / BiTransformer / AELSTM")

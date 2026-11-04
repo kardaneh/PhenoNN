@@ -1,10 +1,11 @@
 """Run registry for the paper figures.
 
 A *run* is a directory that contains ``metrics.json`` (written by
-``predict.py``) and optionally ``history.csv``, ``predictions.csv``,
-``run_metadata.json`` and ``config.json``.  The registry scans a tree, loads
-the small metadata files, and gives the figure functions a single place to
-look up a model by name.
+``predict.py``) or at least ``history.csv`` (a training-only bundle).  The
+registry scans a tree, loads the small metadata files, and gives the figure
+functions a single place to look up a model by name.  Prediction figures
+F1–F4 still require the prediction artefacts; F12 can use a training-only
+run.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ def load_json(path: str) -> dict:
 
 @dataclass
 class Run:
-    """One prediction bundle on disk."""
+    """One training or prediction run directory on disk."""
 
     name: str
     directory: str
@@ -113,10 +114,10 @@ class Run:
 
 
 def discover_runs(root: str) -> List[Run]:
-    """Recursively find directories containing ``metrics.json``."""
+    """Recursively find directories containing metrics or training history."""
     runs: List[Run] = []
     for dirpath, _dirnames, filenames in os.walk(root):
-        if "metrics.json" not in filenames:
+        if "metrics.json" not in filenames and "history.csv" not in filenames:
             continue
         name = os.path.basename(dirpath.rstrip(os.sep))
         metrics = load_json(os.path.join(dirpath, "metrics.json"))

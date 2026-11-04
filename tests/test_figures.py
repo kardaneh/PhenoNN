@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -310,6 +311,21 @@ class TestRegistryAndTables(unittest.TestCase):
             self.assertTrue((root / "F6.tex").exists())
             self.assertTrue((root / "F7.tex").exists())
 
+    def test_history_only_run_is_discovered(self):
+        """A training-only run is available for F12 before prediction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out, _, _ = _bundle(root)
+            (out / "metrics.json").unlink()
+            (out / "climatology_metrics.json").unlink()
+
+            runs = discover_runs(str(root))
+            self.assertEqual(len(runs), 1)
+            run = runs[0]
+            self.assertEqual(run.model_type, "aelstm")
+            self.assertFalse(run.metrics)
+            self.assertFalse(run.history().empty)
+
     def test_climatology_row_and_predict_metadata(self):
         """F6 includes climatology and the bundle records its split."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -429,6 +445,118 @@ class TestMakeAll(unittest.TestCase):
 
             self.assertTrue((out / "F13_memory_kernel.png").exists())
             self.assertTrue((out / "F13_memory_kernel.pdf").exists())
+
+
+class TestAnnotationsOutsideAxes(unittest.TestCase):
+    """Metric boxes and scores are never drawn inside the plotting area."""
+
+    def _capture(self, func, *args, **kwargs):
+        captured = []
+        with mock.patch.object(F, "savefig", lambda fig, out: captured.append(fig)):
+            func(*args, **kwargs)
+        return captured[0]
+
+    def test_f1_metrics_are_a_footnote(self):
+        """F1 puts R²/RMSE/... below the axes, not on the hexbin."""
+        pred = pd.DataFrame(
+            {"lai_obs": np.linspace(0, 6, 200), "lai_pred": np.linspace(0, 6, 200)}
+        )
+        metrics = {
+            "overall_r2": 0.9,
+            "rmse": 0.4,
+            "mae": 0.3,
+            "bias": -0.01,
+            "slope": 0.9,
+            "n_points": 200,
+        }
+        fig = self._capture(F.plot_paper_pred_vs_obs, pred, metrics, "F1")
+        self.assertTrue(all(len(ax.texts) == 0 for ax in fig.axes))
+        self.assertGreaterEqual(len(fig.texts), 1)
+
+    def test_f2_composition_and_scores_are_in_the_title(self):
+        """F2 keeps the PFT composition and scores out of the panels."""
+        doy = np.arange(5, 366, 10)
+        pred = pd.DataFrame(
+            {
+                "site_id": np.repeat(["pix_a", "pix_b"], doy.size),
+                "year": np.repeat([2012, 2013], doy.size),
+                "doy": np.tile(doy, 2),
+                "lai_obs": 2.0 + np.sin(np.tile(doy, 2) / 58.0),
+                "lai_pred": 2.0 + np.sin(np.tile(doy, 2) / 58.0 + 0.1),
+                "lai_clim": 2.0 + np.sin(np.tile(doy, 2) / 58.0 + 0.2),
+                "pft_dom_name": np.repeat(["grass", "crop"], doy.size),
+            }
+        )
+        fig = self._capture(
+            F.plot_paper_site_year_curves,
+            pred,
+            "F2",
+            choices=[("pix_a", 2012), ("pix_b", 2013)],
+        )
+        self.assertTrue(all(len(ax.texts) == 0 for ax in fig.axes))
+        self.assertTrue(all("\n" in ax.get_title() for ax in fig.axes))
+
+    def test_f13_linearity_is_a_footnote(self):
+        """F13 moves the linearity ratio out of the axes."""
+        kernel = pd.DataFrame(
+            {
+                "lag_days": np.arange(0, 40, 5),
+                "mean_abs_delta": np.linspace(0.3, 0.0, 8),
+                "ci_low": np.linspace(0.2, 0.0, 8),
+                "ci_high": np.linspace(0.4, 0.0, 8),
+            }
+        )
+        controls = pd.DataFrame(
+            {"control": ["linearity", "noop"], "value": [0.5, 0.01]}
+        )
+        fig = self._capture(F.plot_paper_memory_kernel, kernel, controls, "F13")
+        self.assertTrue(all(len(ax.texts) == 0 for ax in fig.axes))
+        self.assertGreaterEqual(len(fig.texts), 1)
+
+
+class TestLegendStyle(unittest.TestCase):
+    """Legends are outside the axes and use at least two columns."""
+
+    def test_linestyle_cycle_with_markers(self):
+        """markers=True must not pass None to mpltex's itertools.product."""
+        from analysis.figures.ipsl_aid import MARKERS, linestyle_cycle
+
+        cycle = linestyle_cycle(markers=True)
+        styles = [next(cycle) for _ in range(2 * len(MARKERS))]
+        self.assertTrue({s["marker"] for s in styles}.issubset(set(MARKERS)))
+        self.assertGreaterEqual(len({s["marker"] for s in styles}), 4)
+        self.assertGreaterEqual(len({s["linestyle"] for s in styles}), 3)
+
+    def test_next_style_overrides_colour_and_marker(self):
+        """The palette colour and marker win over the mpltex defaults."""
+        from analysis.figures.ipsl_aid import linestyle_cycle, next_style
+
+        style = next_style(linestyle_cycle(), color="#123456", marker="s")
+        self.assertEqual(style["color"], "#123456")
+        self.assertEqual(style["marker"], "s")
+        self.assertIn("linestyle", style)
+
+    def test_figure_legend_outside_and_multicolumn(self):
+        """A figure legend must be multi-column and clear of the axes."""
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        from analysis.figures.ipsl_aid import collect_handles, figure_legend
+
+        fig, ax = plt.subplots(layout="constrained")
+        ax.plot([0, 1], [0, 1], label="a")
+        ax.plot([0, 1], [1, 0], "--", label="b")
+        handles, labels = collect_handles([ax])
+        legend = figure_legend(fig, handles, labels, ncol=3)
+        fig.canvas.draw()
+
+        self.assertIsNotNone(legend)
+        self.assertGreaterEqual(legend._ncols, 2)
+        self.assertFalse(legend.get_window_extent().overlaps(ax.get_window_extent()))
+        self.assertIsNone(figure_legend(fig, [], []))
+        plt.close(fig)
 
 
 if __name__ == "__main__":
