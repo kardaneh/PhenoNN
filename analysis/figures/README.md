@@ -8,11 +8,11 @@ of the installed `phenonn` package.
 ## Bundle contract
 
 `predict.py` writes most of what the figures need. A run directory is any
-subdirectory of `--runs_dir` containing `metrics.json`:
+subdirectory of `--runs_dir` containing `metrics.json` **or** `history.csv`:
 
 ```text
 run_<name>/
-├── metrics.json              required: discover_runs() uses it as the marker
+├── metrics.json              prediction marker (F1–F7); optional for F12-only
 ├── predictions.csv           F1–F4 (site_id, year, doy, lai_obs, lai_pred, ...)
 ├── rmse_by_doy.csv           F4
 ├── history.csv               F12 (epoch, train_loss, val_loss, is_best)
@@ -21,6 +21,10 @@ run_<name>/
 ├── predict_metadata.json     prediction split and years
 └── config.json               model type and hyper-parameters
 ```
+
+Training-only runs without `metrics.json` are discovered through
+`history.csv`, so F12 can be produced before prediction. F1–F4 and F5–F7
+still skip runs that have no prediction bundle.
 
 Old runs without `run_metadata.json` or `predict_metadata.json` still load;
 their protocol/split is reported as unknown. F5–F7 collapse multiple seeds of
@@ -50,8 +54,20 @@ python -m analysis.figures.make_all \
 After R1 finishes, replace `pilot_aelstm_A` with `aelstm_A_s42` and predict
 first (see `doc/source/prediction.rst`).
 
-`--run` selects the primary run for F1–F4 (name or substring). F12 uses one
-run per architecture by default; override it with `--loss_runs`:
+`--run` selects the primary run for F1–F4 (name or substring). F5–F7 use every
+run in `--runs_dir` by default; pass `--table_runs` with an explicit comma list
+to keep old pilot or preliminary runs out of the paper tables:
+
+```bash
+python -m analysis.figures.make_all \
+    --runs_dir runs/report_reproduction \
+    --out_dir runs/report_reproduction/figures_protocol_A \
+    --run aelstm_A_s42_subset05 \
+    --table_runs aelstm_A_s42_subset05,lstm_A_s42_subset05,bitransformer_A_s42_subset05 \
+    --figures F1,F2,F3,F4,F5,F6,F7,F12
+```
+
+F12 uses one run per architecture by default; override it with `--loss_runs`:
 
 ```bash
 python -m analysis.figures.make_all \
@@ -60,8 +76,11 @@ python -m analysis.figures.make_all \
     --loss_runs aelstm_B_s42,bitransformer_B_s42,lstm_B_s42
 ```
 
-Outputs are PDF + 300 dpi PNG for figures and `.tex` for tables. F2 and F11
-accept deterministic site-year choices from a JSON file:
+Outputs are PDF + 300 dpi PNG (`.tex` for tables). F12 writes linear and log
+loss curves. F2 reads the PFT composition from the run's `config.json`
+`pft_dir`; override with `--pft_dir` or a `--pft_csv` from `pft_curves.py`.
+
+F2 and F11 accept deterministic site-year choices from a JSON file:
 
 ```bash
 cp analysis/figures/figure_choices.example.json \
@@ -121,3 +140,50 @@ line, never a crash.
 
 Plot implementations live in `analysis/figures/figures.py` as `plot_paper_*`.
 The figure code is tested with synthetic bundles in `tests/test_figures.py`.
+
+## Raw and anomaly runs
+
+F1, F2, F4, F5, F6, F11 and F12 use the raw-LAI runs. F3 and F7 need a
+dedicated anomaly-mode model (no PFT mixing); the raw model's anomaly skill is
+not the paper result:
+
+```bash
+python -m analysis.figures.make_all \
+    --runs_dir runs/report_reproduction \
+    --run aelstm_A_s42_anomaly_subset05 \
+    --table_runs aelstm_A_s42_anomaly_subset05 \
+    --figures F3,F7
+```
+
+## Site-density map (D1)
+
+The dataset overview map is separate from `make_all`: it needs the
+selected-pixels NetCDF and cartopy.
+
+```bash
+uv pip install -e ".[full,figures]"
+# or: uv pip install cartopy
+
+export CARTOPY_DATA_DIR="${CARTOPY_DATA_DIR:-/path/to/cartopy_data}"  # optional
+
+python -m analysis.diagnostics.spatial_plot_selected_pixels \
+    --selected_pixels "$PWD/pixelset1/selected_pixels005_balanced.nc" \
+    --density \
+    --highlight_site pix_2077_04163 \
+    --output runs/report_reproduction/D1_site_density.png
+```
+
+This writes `D1_site_density.pdf`/`.png` with land, coastlines and borders.
+Without cartopy it falls back to a plain lon/lat density panel.
+
+## Legend and line-style rules
+
+Helpers live in `analysis/figures/ipsl_aid.py`.
+
+- Legends sit outside the axes (`loc="outside lower center"` or
+  `"outside upper center"`) with `ncol >= 2`; never `loc="best"`.
+- Figures use `layout="constrained"`; do not call `tight_layout()` as well.
+- Line styles come from `mpltex` via `linestyle_cycle()`/`next_style()`;
+  palette colours stay semantic.
+- Annotation text (metrics, PFT composition, control ratios) goes in the
+  footnote (`figure_note`) or the panel title, never inside the axes.

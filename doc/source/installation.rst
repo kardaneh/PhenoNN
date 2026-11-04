@@ -156,6 +156,8 @@ Optional extras
 ~~~~~~~~~~~~~~~
 
 - **full** — the model, training, prediction and figure dependencies.
+- **figures** — ``cartopy`` for the D1 site-density map. Needed when
+  building the global map figure.
 - **dev** — ``ruff`` and ``pre-commit``. Needed for the lint/format gate.
 - **docs** — Sphinx, ``myst-parser``, ``sphinx-rtd-theme``,
   ``sphinx-copybutton``, ``sphinx-autodoc-typehints``. Needed to build

@@ -292,13 +292,14 @@ This script prints to the terminal. Add a raw ERA5 file with
 Plots every site in a selected-pixel file on a world map.
 
 ```bash
-python analysis/diagnostics/spatial_plot_selected_pixels.py \
+python -m analysis.diagnostics.spatial_plot_selected_pixels \
     --selected_pixels "$DATA/selected_pixels005_1.nc" \
+    --density \
     --output runs/spatial_selected_pixels.png
 ```
 
-The script uses cartopy when available and falls back to a plain lon/lat plot
-otherwise.
+Writes PDF + PNG. `--density` draws a hexbin count map; without cartopy it
+falls back to a plain lon/lat panel.
 
 #### `print_lai_pft_sites.py`
 
