@@ -178,7 +178,7 @@ def _parse_year_spec(s: str):
 # ── Climatology ───────────────────────────────────────────────────────────────
 
 
-def _load_clim_source_from_targets(
+def load_clim_source_from_targets(
     target_dir: str,
     clim_years,
     wanted_sites,
@@ -271,6 +271,11 @@ def add_climatology(
     Rows where the climatology cannot be computed (no obs at that (site, doy)
     in the source, or only 1 year in LOO mode) get NaN.
     """
+    # Prediction bundles already carry ``lai_clim``.  Drop it before the
+    # merge below, otherwise pandas creates ``lai_clim_x`` / ``lai_clim_y``
+    # and the caller's ``df["lai_clim"]`` disappears.
+    df = df.drop(columns=["lai_clim"], errors="ignore")
+
     # ── Fixed reference period (clim_years) ──
     if clim_years is not None:
         years_in_df = set(int(y) for y in df["year"].unique())
@@ -290,7 +295,7 @@ def add_climatology(
                 f"Loading climatology source from {clim_target_dir!r} for "
                 f"{len(clim_years)} year(s)..."
             )
-            source = _load_clim_source_from_targets(
+            source = load_clim_source_from_targets(
                 clim_target_dir,
                 clim_years,
                 df["site_id"].unique(),

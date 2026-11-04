@@ -101,7 +101,9 @@ def parse_args():
         "--target_dir",
         default="",
         help="Folder of LAI_dekadal_{Y}.nc (obs-only mode if "
-        "--predictions is empty; legacy target_{Y}.csv also supported).",
+        "--predictions is empty; when --predictions is given, used only to "
+        "build --clim_years if those years are outside the predictions CSV; "
+        "legacy target_{Y}.csv also supported).",
     )
     p.add_argument(
         "--sites_mode",
@@ -613,7 +615,10 @@ def main():
     if not args.predictions and not args.target_dir:
         raise ValueError("Provide either --predictions or --target_dir.")
     if args.predictions and args.target_dir:
-        print("[info] --predictions takes precedence; --target_dir is ignored.")
+        print(
+            "[info] --target_dir is used only for the --clim_years "
+            "reference when those years are outside the predictions CSV."
+        )
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -658,10 +663,36 @@ def main():
             & df_all_years["year"].isin(clim_year_set)
         ]
         if clim_src.empty:
-            raise RuntimeError(
-                f"No observations in --clim_years {sorted(clim_year_set)} "
-                f"for the selected sites."
+            if not args.target_dir:
+                raise RuntimeError(
+                    f"No observations in --clim_years "
+                    f"{sorted(clim_year_set)} in the predictions CSV. "
+                    "Pass --target_dir with LAI_dekadal_{Y}.nc for those "
+                    "years, or restrict --clim_years to years present in "
+                    "the predictions."
+                )
+            print(
+                f"Loading climatology from --target_dir "
+                f"{args.target_dir!r} for {len(clim_year_set)} year(s)..."
             )
+            # Load only the requested years and selected sites.  The generic
+            # `_load_from_target_dir` helper loads every site/year and would be
+            # far too large for the full pixelset.
+            from analysis.diagnostics.climatology_baseline import (
+                load_clim_source_from_targets,
+            )
+
+            clim_src = load_clim_source_from_targets(
+                args.target_dir,
+                clim_year_set,
+                selected_sites,
+            )
+            if clim_src.empty:
+                raise RuntimeError(
+                    f"No observations in --clim_years "
+                    f"{sorted(clim_year_set)} in --target_dir "
+                    f"{args.target_dir!r}."
+                )
         clim_metrics = compute_climatology_metrics(
             clim_src,
             "lai_obs",

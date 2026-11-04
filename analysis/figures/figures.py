@@ -8,19 +8,33 @@ keeps them testable with synthetic bundles.
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 from analysis.figures.style import (
     MODEL_COLORS,
     PALETTE,
-    annotate_metrics,
     apply_style,
     savefig,
+)
+from analysis.figures.ipsl_aid import (
+    add_log_count_colorbar,
+    collect_handles,
+    figure_legend,
+    figure_note,
+    hexbin_density,
+    identity_line,
+    integer_epoch_axis,
+    linestyle_cycle,
+    metrics_line,
+    model_label,
+    next_style,
 )
 
 __all__ = [
@@ -72,49 +86,72 @@ def plot_paper_pred_vs_obs(
     """F1: hexbin density of predictions against observations."""
     apply_style()
     d = pred[[obs_col, pred_col]].dropna()
-    fig, ax = plt.subplots(figsize=(5.6, 5.0))
+    fig, ax = plt.subplots(figsize=(5.6, 5.6))
     if not d.empty:
-        hb = ax.hexbin(
-            d[obs_col],
-            d[pred_col],
-            gridsize=70,
-            bins="log",
-            cmap="viridis",
-            mincnt=1,
-            linewidths=0,
-        )
-        cb = fig.colorbar(hb, ax=ax, pad=0.02)
-        cb.set_label("log₁₀(count)")
+        hb = hexbin_density(ax, d[obs_col], d[pred_col])
+        add_log_count_colorbar(fig, hb, ax)
         lo = float(min(d[obs_col].min(), d[pred_col].min()))
         hi = float(max(d[obs_col].max(), d[pred_col].max()))
         pad = 0.03 * (hi - lo if hi > lo else 1.0)
-        ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], "k--", lw=1.2)
+        identity_line(ax, lo - pad, hi + pad)
         ax.set_xlim(lo - pad, hi + pad)
         ax.set_ylim(lo - pad, hi + pad)
     ax.set_xlabel("Observed LAI")
     ax.set_ylabel("Predicted LAI")
     ax.set_title(title)
-    _clean(ax)
-    annotate_metrics(ax, metrics)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(False)
+    # Two short lines keep the note inside the figure width, below the x-label.
+    figure_note(
+        fig,
+        "\n".join(
+            [
+                metrics_line(metrics, ("overall_r2", "rmse", "mae")),
+                metrics_line(metrics, ("bias", "slope", "n_points")),
+            ]
+        ),
+    )
     savefig(fig, out)
 
 
 def _pick_site_years(pred: pd.DataFrame, n: int = 2) -> List[Tuple[str, int]]:
-    """Deterministically pick the best and worst site-years by RMSE."""
+    """Pick two contrasting, well-predicted site-years.
+
+    The default is deliberately not "best vs worst": a catastrophic site-year
+    is not a useful illustration of the model.  We keep site-years with at
+    least 24 valid dekads, non-flat observations and an RMSE in the better half
+    of the distribution, then choose the lowest and highest observed mean LAI.
+    """
     d = pred[["site_id", "year", "lai_obs", "lai_pred"]].dropna()
     if d.empty:
         return []
     d = d.assign(err2=(d["lai_pred"] - d["lai_obs"]) ** 2)
-    g = d.groupby(["site_id", "year"], sort=True)["err2"].agg(["mean", "size"])
-    g = g[g["size"] >= 12]
+    g = (
+        d.groupby(["site_id", "year"], sort=True)
+        .agg(
+            obs_mean=("lai_obs", "mean"),
+            obs_std=("lai_obs", "std"),
+            mse=("err2", "mean"),
+            size=("lai_obs", "size"),
+        )
+        .reset_index()
+    )
+    g = g[(g["size"] >= 24) & (g["obs_std"] > 0.05) & g["mse"].notna()].copy()
     if g.empty:
-        g = d.groupby(["site_id", "year"], sort=True)["err2"].mean().to_frame("mean")
-        g["size"] = 1
-    g = g.sort_values("mean")
-    picks = [tuple(g.index[0])]
-    if len(g) > 1 and n > 1:
-        picks.append(tuple(g.index[-1]))
-    return [(str(s), int(y)) for s, y in picks[:n]]
+        return []
+    g["rmse"] = np.sqrt(g["mse"])
+    good = g[g["rmse"] <= g["rmse"].quantile(0.5)]
+    if len(good) < 2:
+        good = g
+    good = good.sort_values("obs_mean")
+    picks = [good.iloc[0], good.iloc[-1]]
+    if (
+        len(good) > 2
+        and picks[0][["site_id", "year"]].tolist()
+        == picks[1][["site_id", "year"]].tolist()
+    ):
+        picks[1] = good.iloc[-2]
+    return [(str(r.site_id), int(r.year)) for r in picks[:n]]
 
 
 def _site_year_scores(frame: pd.DataFrame) -> Tuple[float, float]:
@@ -157,12 +194,53 @@ def _composition_text(
     )
 
 
+def _pft_composition_from_files(pft_dir: str, site, year, top: int = 3) -> str:
+    """Top PFT fractions read directly from ``PFTmap_{year}.nc``."""
+    if not pft_dir:
+        return ""
+    try:
+        import xarray as xr
+
+        from phenonn.utils.config import PFT_COLS, PFT_FNAME, PFT_NAMES
+    except Exception:
+        return ""
+    path = os.path.join(pft_dir, PFT_FNAME.format(year=int(year)))
+    if not os.path.exists(path):
+        return ""
+    try:
+        with xr.open_dataset(path) as ds:
+            ids = np.asarray(ds["site_id"].values).astype(str)
+            hit = np.flatnonzero(ids == str(site))
+            if hit.size == 0:
+                return ""
+            row = int(hit[0])
+            if "pft_frac" in ds:
+                values = np.asarray(ds["pft_frac"].isel(site=row).values, dtype=float)
+                fractions = {
+                    name: float(values[i])
+                    for i, name in enumerate(PFT_NAMES)
+                    if i < values.size
+                }
+            else:
+                fractions = {
+                    name: float(ds[col].isel(site=row).values)
+                    for name, col in zip(PFT_NAMES, PFT_COLS)
+                    if col in ds
+                }
+    except Exception:
+        return ""
+    ranked = sorted(fractions.items(), key=lambda item: item[1], reverse=True)
+    ranked = [(name, frac) for name, frac in ranked if frac >= 0.01][:top]
+    return "\n".join(f"{name}: {100.0 * frac:.0f}%" for name, frac in ranked)
+
+
 def plot_paper_site_year_curves(
     pred: pd.DataFrame,
     out: str,
     choices: Optional[Sequence[Tuple[str, int]]] = None,
-    title: str = "Contrasted site-years",
+    title: str = "",
     pft_df: Optional[pd.DataFrame] = None,
+    pft_dir: str = "",
 ) -> None:
     """F2: two site-year curves with observations, climatology and scores.
 
@@ -174,12 +252,16 @@ def plot_paper_site_year_curves(
     out : str
         Output path stem; PDF and PNG are written.
     choices : sequence of (site_id, year), optional
-        Explicit site-years.  Defaults to the best/worst RMSE site-years.
+        Explicit site-years.  Defaults to two quality-filtered, contrasting
+        site-years (low and high observed LAI).
     title : str
-        Figure title.
+        Optional figure title; normally left empty for the LaTeX caption.
     pft_df : pandas.DataFrame, optional
         Long per-PFT table (``site_id``, ``year``, ``pft``, ``pft_name``,
         ``frac``).  When given, the top three PFT fractions are shown.
+    pft_dir : str, optional
+        Folder of ``PFTmap_{year}.nc``; used when ``pft_df`` does not contain
+        the chosen site-year.
     """
     apply_style()
     if choices is None:
@@ -187,82 +269,86 @@ def plot_paper_site_year_curves(
     if not choices:
         raise ValueError("no site-year with valid observations")
     fig, axes = plt.subplots(
-        1, len(choices), figsize=(5.6 * len(choices), 4.0), squeeze=False
+        1,
+        len(choices),
+        figsize=(5.8 * len(choices), 4.6),
+        squeeze=False,
+        layout="constrained",
     )
-    for ax, (site, year) in zip(axes[0], choices):
+    # Stable semantics: observations are markers, predictions the first mpltex
+    # style (solid), climatology the second (dashed).
+    styles = linestyle_cycle()
+    pred_ls = next(styles)["linestyle"]
+    clim_ls = next(styles)["linestyle"]
+    for index, (ax, (site, year)) in enumerate(zip(axes[0], choices)):
         g = pred[(pred["site_id"].astype(str) == str(site)) & (pred["year"] == year)]
         g = g.sort_values("doy")
         if g.empty:
             ax.set_visible(False)
             continue
-        ax.plot(g["doy"], g["lai_obs"], "o", ms=4, color="k", label="Observed")
+        ax.plot(
+            g["doy"],
+            g["lai_obs"],
+            "o",
+            ms=4,
+            color=PALETTE["blue"],
+            label="Observed",
+            zorder=3,
+        )
         ax.plot(
             g["doy"],
             g["lai_pred"],
-            "-",
+            linestyle=pred_ls,
             lw=2,
-            color=PALETTE["orange"],
+            color=PALETTE["red"],
             label="Predicted",
+            zorder=2,
         )
         if "lai_clim" in g.columns and g["lai_clim"].notna().any():
             ax.plot(
                 g["doy"],
                 g["lai_clim"],
-                "--",
+                linestyle=clim_ls,
                 lw=1.5,
-                color=PALETTE["grey"],
+                color=PALETTE["green"],
                 label="Climatology",
+                zorder=1,
             )
-        ax.set_title(f"{site} — {year}")
         ax.set_xlabel("Day of year")
-        ax.set_ylabel("LAI")
+        if index == 0:
+            ax.set_ylabel("LAI")
+        ax.set_xlim(0, 365)
         _clean(ax)
-        ax.legend(loc="best")
 
+        # Composition and scores go in the panel title: constrained layout
+        # reserves that space, so nothing is drawn on top of the curves.
         r2, rmse = _site_year_scores(g)
+        composition = _composition_text(pft_df, site, year)
+        if not composition:
+            composition = _pft_composition_from_files(pft_dir, site, year)
+        if not composition and "pft_dom_name" in g.columns:
+            purity = (
+                f" (purity {g['purity'].iloc[0]:.2f})"
+                if "purity" in g.columns and np.isfinite(g["purity"].iloc[0])
+                else ""
+            )
+            composition = f"{g['pft_dom_name'].iloc[0]}{purity}"
+
+        panel_lines = [f"{site} — {year}"]
+        if composition:
+            panel_lines.append(composition)
         if np.isfinite(rmse):
-            score = (
-                f"R² = {r2:.3f}\nRMSE = {rmse:.3f}"
+            panel_lines.append(
+                f"R² = {r2:.3f} · RMSE = {rmse:.3f}"
                 if np.isfinite(r2)
                 else f"RMSE = {rmse:.3f}"
             )
-            ax.text(
-                0.98,
-                0.02,
-                score,
-                transform=ax.transAxes,
-                ha="right",
-                va="bottom",
-                fontsize=8,
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="0.8", alpha=0.85),
-            )
+        ax.set_title("\n".join(panel_lines), fontsize=9)
 
-        composition = _composition_text(pft_df, site, year)
-        if composition:
-            ax.text(
-                0.02,
-                0.02,
-                composition,
-                transform=ax.transAxes,
-                fontsize=7,
-                va="bottom",
-            )
-        elif "pft_dom_name" in g.columns:
-            ax.text(
-                0.02,
-                0.02,
-                f"dominant PFT: {g['pft_dom_name'].iloc[0]}"
-                + (
-                    f" (purity {g['purity'].iloc[0]:.2f})"
-                    if "purity" in g.columns and np.isfinite(g["purity"].iloc[0])
-                    else ""
-                ),
-                transform=ax.transAxes,
-                fontsize=8,
-                va="bottom",
-            )
-    fig.suptitle(title)
-    fig.tight_layout()
+    handles, labels = collect_handles(axes[0])
+    figure_legend(fig, handles, labels, ncol=3)
+    if title:
+        fig.suptitle(title)
     savefig(fig, out)
 
 
@@ -278,18 +364,11 @@ def plot_paper_anomaly_scatter(
     d = pred[[obs_col, pred_col]].dropna()
     fig, ax = plt.subplots(figsize=(5.6, 5.0))
     if not d.empty:
-        ax.hexbin(
-            d[obs_col],
-            d[pred_col],
-            gridsize=70,
-            bins="log",
-            cmap="magma",
-            mincnt=1,
-            linewidths=0,
-        )
+        hb = hexbin_density(ax, d[obs_col], d[pred_col])
+        add_log_count_colorbar(fig, hb, ax)
         lim = float(np.nanpercentile(np.abs(d.values), 99.5))
         lim = max(lim, 0.05)
-        ax.plot([-lim, lim], [-lim, lim], "k--", lw=1.2)
+        identity_line(ax, -lim, lim)
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
     ax.axhline(0, color="grey", lw=0.6)
@@ -297,16 +376,20 @@ def plot_paper_anomaly_scatter(
     ax.set_xlabel("Observed ΔLAI")
     ax.set_ylabel("Predicted ΔLAI")
     ax.set_title("Anomaly skill")
-    _clean(ax)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(False)
     an = metrics.get("anomaly") if isinstance(metrics, dict) else None
-    annotate_metrics(ax, an or metrics)
+    figure_note(
+        fig,
+        metrics_line(an or metrics, keys=("overall_r2", "rmse", "mae", "bias")),
+    )
     savefig(fig, out)
 
 
 def plot_paper_rmse_by_doy(
     rmse: pd.DataFrame,
     out: str,
-    title: str = "Error by day of year",
+    title: str = "RMSE by day of year",
 ) -> None:
     """F4: RMSE per DOY against climatology and the derived skill score."""
     apply_style()
@@ -321,36 +404,50 @@ def plot_paper_rmse_by_doy(
             figsize=(7.2, 5.8),
             sharex=True,
             gridspec_kw={"height_ratios": [2.0, 1.0]},
+            layout="constrained",
         )
     else:
-        fig, ax = plt.subplots(figsize=(7.2, 4.0))
+        fig, ax = plt.subplots(figsize=(7.2, 4.2), layout="constrained")
         ax_skill = None
 
-    ax.plot(rmse["doy"], rmse["rmse_model"], color=PALETTE["orange"], label="Model")
+    styles = linestyle_cycle()
+    model_ls = next(styles)["linestyle"]
+    clim_ls = next(styles)["linestyle"]
+
+    ax.plot(
+        rmse["doy"],
+        rmse["rmse_model"],
+        linestyle=model_ls,
+        color=PALETTE["red"],
+        label="Model",
+    )
+    has_better = False
     if has_clim:
         ax.plot(
             rmse["doy"],
             rmse["rmse_clim"],
-            "--",
+            linestyle=clim_ls,
             color=PALETTE["grey"],
             label="Climatology",
         )
         better = rmse["rmse_model"] < rmse["rmse_clim"]
-        ax.fill_between(
-            rmse["doy"],
-            0,
-            rmse["rmse_model"].max() * 1.05,
-            where=better,
-            color=PALETTE["green"],
-            alpha=0.12,
-            lw=0,
-            label="Model beats climatology",
-        )
+        has_better = bool(better.any())
+        if has_better:
+            ax.fill_between(
+                rmse["doy"],
+                rmse["rmse_model"],
+                rmse["rmse_clim"],
+                where=better,
+                color=PALETTE["green"],
+                alpha=0.22,
+                lw=0,
+                label="Model beats climatology",
+            )
     ax.set_ylabel("RMSE (LAI)")
     ax.set_title(title)
     ax.set_xlim(0, 365)
+    ax.set_ylim(bottom=0)
     _clean(ax)
-    ax.legend(loc="upper right")
 
     if ax_skill is not None:
         denom = rmse["rmse_clim"].replace(0.0, np.nan)
@@ -373,7 +470,10 @@ def plot_paper_rmse_by_doy(
     else:
         ax.set_xlabel("Day of year")
 
-    fig.tight_layout()
+    handles, labels = collect_handles([ax])
+    figure_legend(fig, handles, labels, ncol=3)
+    if has_clim and not has_better:
+        figure_note(fig, "Model does not beat climatology")
     savefig(fig, out)
 
 
@@ -431,10 +531,11 @@ def plot_paper_perturbation_curves(
 ) -> None:
     """F9: seasonal ΔLAI curves for one or more perturbation scenarios."""
     apply_style()
-    fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    fig, ax = plt.subplots(figsize=(7.2, 4.6), layout="constrained")
     ax.axhline(0, color="grey", lw=0.8)
     labels = [s for s in SCENARIO_ORDER if s in frames]
     labels += [s for s in frames if s not in SCENARIO_ORDER]
+    styles = linestyle_cycle()
     for label in labels:
         df = frames[label]
         if df.empty or "doy" not in df.columns or value_col not in df.columns:
@@ -445,7 +546,7 @@ def plot_paper_perturbation_curves(
         )
         g = df.groupby("doy")[value_col].agg(["mean", "std", "count"]).sort_index()
         sem = g["std"] / np.sqrt(g["count"].clip(lower=1))
-        ax.plot(g.index, g["mean"], color=color, label=label)
+        ax.plot(g.index, g["mean"], label=label, **next_style(styles, color=color))
         ax.fill_between(
             g.index,
             g["mean"] - 1.96 * sem,
@@ -459,23 +560,25 @@ def plot_paper_perturbation_curves(
     ax.set_title("Perturbation response")
     ax.set_xlim(0, 365)
     _clean(ax)
-    ax.legend(loc="best")
-    fig.tight_layout()
+    handles, labels = collect_handles([ax])
+    figure_legend(fig, handles, labels, ncol=min(3, max(2, len(labels))))
     savefig(fig, out)
 
 
 def plot_paper_warming_co2(df: pd.DataFrame, out: str) -> None:
     """F10: ΔLAI and phenology shifts versus warming, one line per CO2 mode."""
     apply_style()
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.0))
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.6), layout="constrained")
     d = df.copy()
     if "co2_mode" not in d.columns:
         d["co2_mode"] = "absolute"
+    styles = linestyle_cycle(markers=True)
     for mode, g in d.groupby("co2_mode"):
         g = g.sort_values("delta_t")
-        axes[0].plot(g["delta_t"], g["mean_delta_lai"], "o-", label=mode)
+        style = next_style(styles)
+        axes[0].plot(g["delta_t"], g["mean_delta_lai"], label=mode, **style)
         if "median_dsos_10" in g.columns:
-            axes[1].plot(g["delta_t"], g["median_dsos_10"], "o-", label=mode)
+            axes[1].plot(g["delta_t"], g["median_dsos_10"], label=mode, **style)
     axes[0].axhline(0, color="grey", lw=0.8)
     axes[0].set_xlabel("ΔT (°C)")
     axes[0].set_ylabel("Mean ΔLAI")
@@ -484,10 +587,16 @@ def plot_paper_warming_co2(df: pd.DataFrame, out: str) -> None:
     axes[1].set_xlabel("ΔT (°C)")
     axes[1].set_ylabel("ΔSOS (days)")
     axes[1].set_title("Phenology response")
+    handles, labels = collect_handles(axes)
     for ax in axes:
         _clean(ax)
-        ax.legend(loc="best")
-    fig.tight_layout()
+    figure_legend(
+        fig,
+        handles,
+        labels,
+        ncol=min(3, max(2, len(labels))),
+        loc="outside upper center",
+    )
     savefig(fig, out)
 
 
@@ -514,20 +623,31 @@ def plot_paper_pft_curves(
     if g.empty:
         raise ValueError(f"no rows for {site_id} / {year}")
 
-    fig, ax = plt.subplots(figsize=(7.4, 4.4))
+    fig, ax = plt.subplots(figsize=(7.4, 5.2), layout="constrained")
     colors = plt.cm.tab20(np.linspace(0, 1, 15))
+    styles = linestyle_cycle()
+    grey_label = "PFT < 5%"
+    grey_labelled = False
     for pft, h in g.groupby("pft"):
         h = h.sort_values("doy")
         frac = float(h["frac"].iloc[0])
         if frac < min_frac:
-            ax.plot(h["doy"], h["lai_pure"], color="lightgrey", lw=0.7, zorder=1)
+            ax.plot(
+                h["doy"],
+                h["lai_pure"],
+                color="lightgrey",
+                lw=0.7,
+                zorder=1,
+                label=None if grey_labelled else grey_label,
+            )
+            grey_labelled = True
         else:
             ax.plot(
                 h["doy"],
                 h["lai_pure"],
-                color=colors[int(pft)],
                 lw=1.8,
                 label=f"{h['pft_name'].iloc[0]} ({frac * 100:.0f}%)",
+                **next_style(styles, color=colors[int(pft)]),
             )
     ax.plot(
         g.sort_values("doy")["doy"],
@@ -540,17 +660,16 @@ def plot_paper_pft_curves(
         g.sort_values("doy")["doy"],
         g.sort_values("doy")["lai_obs"],
         "o",
-        color=PALETTE["orange"],
+        color=PALETTE["red"],
         ms=4,
         label="Observed",
     )
     ax.set_xlabel("Day of year")
     ax.set_ylabel("LAI")
-    ax.set_title(f"Per-PFT decomposition — {site_id} / {year}")
     ax.set_xlim(0, 365)
     _clean(ax)
-    ax.legend(loc="upper left", fontsize=8, ncol=2)
-    fig.tight_layout()
+    handles, labels = collect_handles([ax])
+    figure_legend(fig, handles, labels, ncol=4)
     savefig(fig, out)
 
 
@@ -588,6 +707,7 @@ def plot_paper_loss_curves(
     histories,
     out: str,
     early_stop_epochs: Optional[Mapping[str, int]] = None,
+    log_scale: bool = False,
 ) -> None:
     """F12: training/validation loss for one or more architectures.
 
@@ -601,22 +721,38 @@ def plot_paper_loss_curves(
     early_stop_epochs : mapping, optional
         ``{architecture: epoch}`` for an early-stop marker.  The marker is
         omitted when the value is missing or ``None``.
+    log_scale : bool
+        Use a logarithmic loss axis.  ``make_all`` writes both variants.
     """
     apply_style()
     groups = _history_groups(histories)
     if not groups:
         raise ValueError("no training history to plot")
 
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.2), sharex=True)
+    fig, axes = plt.subplots(
+        1, 2, figsize=(11.0, 4.6), sharex=True, layout="constrained"
+    )
     default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    styles = linestyle_cycle()
+    drew_best = False
+    drew_stop = False
 
     for index, (label, frames) in enumerate(groups.items()):
         color = MODEL_COLORS.get(label, default_colors[index % len(default_colors)])
+        line = next(styles)
+        line_style = line.get("linestyle", "-") if isinstance(line, dict) else "-"
+        display = model_label(label)
         train = _mean_curve(frames, "train_loss")
         valid = _mean_curve(frames, "val_loss")
 
         if not train.empty:
-            axes[0].plot(train.index, train["mean"], color=color, label=label)
+            axes[0].plot(
+                train.index,
+                train["mean"],
+                color=color,
+                linestyle=line_style,
+                label=display,
+            )
             if len(frames) > 1:
                 axes[0].fill_between(
                     train.index,
@@ -627,7 +763,13 @@ def plot_paper_loss_curves(
                     lw=0,
                 )
         if not valid.empty:
-            axes[1].plot(valid.index, valid["mean"], color=color, label=label)
+            axes[1].plot(
+                valid.index,
+                valid["mean"],
+                color=color,
+                linestyle=line_style,
+                label=display,
+            )
             if len(frames) > 1:
                 axes[1].fill_between(
                     valid.index,
@@ -655,21 +797,38 @@ def plot_paper_loss_curves(
                     color=color,
                     ms=6,
                 )
+                drew_best = True
 
         if early_stop_epochs:
             stop = early_stop_epochs.get(label)
             if stop is not None:
                 for axis in axes:
                     axis.axvline(stop, color=color, ls=":", lw=1.2)
+                drew_stop = True
 
     axes[0].set_title("Training loss")
     axes[1].set_title("Validation loss (dot = best epoch)")
     for axis in axes:
         axis.set_xlabel("Epoch")
         axis.set_ylabel("Loss")
+        axis.set_yscale("log" if log_scale else "linear")
+        integer_epoch_axis(axis)
         _clean(axis)
-        axis.legend(loc="best")
-    fig.tight_layout()
+
+    handles, labels = collect_handles([axes[0]])
+    if drew_best:
+        handles.append(Line2D([], [], marker="o", color="k", linestyle="None", ms=6))
+        labels.append("best epoch")
+    if drew_stop:
+        handles.append(Line2D([], [], color="grey", linestyle=":", lw=1.2))
+        labels.append("early stop")
+    figure_legend(
+        fig,
+        handles,
+        labels,
+        ncol=min(3, max(2, len(labels))),
+        loc="outside upper center",
+    )
     savefig(fig, out)
 
 
@@ -680,13 +839,13 @@ def plot_paper_memory_kernel(
     apply_style()
     if kernel.empty:
         raise ValueError("empty memory kernel")
-    fig, ax = plt.subplots(figsize=(7.2, 4.0))
+    fig, ax = plt.subplots(figsize=(7.2, 4.4), layout="constrained")
+    styles = linestyle_cycle()
     ax.plot(
         kernel["lag_days"],
         kernel["mean_abs_delta"],
-        "o-",
-        color=PALETTE["blue"],
         label="Impulse response",
+        **next_style(styles, color=PALETTE["blue"], marker="o"),
     )
     if {"ci_low", "ci_high"}.issubset(kernel.columns):
         ax.fill_between(
@@ -697,6 +856,7 @@ def plot_paper_memory_kernel(
             alpha=0.18,
             lw=0,
         )
+    note = ""
     if controls is not None and not controls.empty:
         values = controls.drop_duplicates("control").set_index("control")["value"]
         if "random_day" in values.index:
@@ -725,21 +885,14 @@ def plot_paper_memory_kernel(
                 label="No-op control",
             )
         if "linearity" in values.index:
-            ax.text(
-                0.98,
-                0.02,
-                f"linearity ratio = {float(values['linearity']):.2f}",
-                transform=ax.transAxes,
-                ha="right",
-                va="bottom",
-                fontsize=8,
-            )
+            note = f"linearity ratio = {float(values['linearity']):.2f}"
     ax.set_xlabel("Lag (days)")
     ax.set_ylabel("Mean |ΔLAI|")
     ax.set_title("Memory kernel")
     _clean(ax)
-    ax.legend(loc="best")
-    fig.tight_layout()
+    handles, labels = collect_handles([ax])
+    figure_legend(fig, handles, labels, ncol=2)
+    figure_note(fig, note)
     savefig(fig, out)
 
 
