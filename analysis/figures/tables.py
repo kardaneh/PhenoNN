@@ -122,14 +122,32 @@ def _best_epoch(runs) -> str:
     return str(int(round(float(np.mean(epochs)))))
 
 
+def _display_model(label: str) -> str:
+    """Publication spelling for an architecture label."""
+    from analysis.figures.ipsl_aid import model_label
+
+    return model_label(label) or label
+
+
+def _protocol_text(registry: Registry) -> str:
+    """One protocol label when all runs agree, otherwise a generic note."""
+    protocols = sorted(
+        {run.protocol for run in registry if getattr(run, "protocol", None) is not None}
+    )
+    if len(protocols) == 1:
+        return f"Protocol {protocols[0]}"
+    return "the evaluated protocol"
+
+
 def to_latex(
     df: pd.DataFrame,
     path: str,
     caption: str = "",
     label: str = "",
     column_format: Optional[str] = None,
+    resize: bool = False,
 ) -> str:
-    """Write a booktabs LaTeX table and return the LaTeX string."""
+    """Write a centred, booktabs LaTeX table and return the LaTeX string."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tex = df.to_latex(
         index=False,
@@ -152,6 +170,17 @@ def to_latex(
             )
             rebuilt.append(rule + part)
         tex = "".join(rebuilt)
+
+    tex = tex.replace(
+        "\\begin{table}",
+        "\\begin{table}[htbp]\n\\centering\n\\small\n" "\\setlength{\\tabcolsep}{4pt}",
+    )
+    if resize:
+        tex = tex.replace(
+            "\\begin{tabular}",
+            "\\resizebox{\\textwidth}{!}{%\n\\begin{tabular}",
+        )
+        tex = tex.replace("\\end{tabular}", "\\end{tabular}%\n}")
     with open(path, "w") as f:
         f.write(tex)
     return tex
@@ -163,7 +192,7 @@ def architecture_table(registry: Registry, path: str) -> pd.DataFrame:
     for label, runs in _group_runs(registry).items():
         rows.append(
             {
-                "Model": label,
+                "Model": _display_model(label),
                 "Seeds": _seeds(runs),
                 "R²": _fmt_ms(_values(runs, lambda r: _metric(r, "overall_r2"))),
                 "R² (centred)": _fmt_ms(
@@ -190,11 +219,12 @@ def architecture_table(registry: Registry, path: str) -> pd.DataFrame:
         to_latex(
             df,
             path,
-            caption="Architecture comparison on Dataset 1 (Protocol B). "
-            "Metrics are pooled over all test site-years; the best epoch is "
-            "selected on validation loss only. Mean $\\pm$ std across seeds "
-            "where more than one run is available.",
+            caption=f"Architecture comparison on Dataset 1 "
+            f"({_protocol_text(registry)}). Metrics are pooled over all test "
+            "site-years; the best epoch is selected on validation loss only. "
+            "Mean $\\pm$ std across seeds where more than one run is available.",
             label="tab:architecture",
+            resize=True,
         )
     return df
 
@@ -205,7 +235,7 @@ def model_vs_climatology_table(registry: Registry, path: str) -> pd.DataFrame:
     for label, runs in _group_runs(registry).items():
         rows.append(
             {
-                "Model": label,
+                "Model": _display_model(label),
                 "Seeds": _seeds(runs),
                 "R²": _fmt_ms(_values(runs, lambda r: _metric(r, "overall_r2"))),
                 "Centred R²": _fmt_ms(
@@ -250,9 +280,9 @@ def model_vs_climatology_table(registry: Registry, path: str) -> pd.DataFrame:
             df,
             path,
             caption="Model skill against the training-year climatology "
-            "(Dataset 1, test decade). The climatology row is computed with "
-            "the same code path on the same points. Mean $\\pm$ std across "
-            "seeds where more than one run is available.",
+            f"(Dataset 1, {_protocol_text(registry)}). The climatology row is "
+            "computed with the same code path on the same points. Mean "
+            "$\\pm$ std across seeds where more than one run is available.",
             label="tab:climatology",
         )
     return df
@@ -267,7 +297,7 @@ def anomaly_table(registry: Registry, path: str) -> pd.DataFrame:
             continue
         rows.append(
             {
-                "Model": label,
+                "Model": _display_model(label),
                 "Seeds": _seeds(anomaly_runs),
                 "Anomaly R²": _fmt_ms(
                     _values(anomaly_runs, lambda r: _anomaly_metric(r, "overall_r2"))
@@ -292,10 +322,11 @@ def anomaly_table(registry: Registry, path: str) -> pd.DataFrame:
         to_latex(
             df,
             path,
-            caption="Anomaly skill against the training-year climatology. "
-            "The last column is the fraction of sites with anomaly R² > 0, "
-            "i.e. sites where the model beats the climatology. Mean $\\pm$ "
-            "std across seeds where more than one run is available.",
+            caption="Anomaly skill against the training-year climatology "
+            f"({_protocol_text(registry)}). The last column is the fraction of "
+            "sites with anomaly R² > 0, i.e. sites where the model beats the "
+            "climatology. Mean $\\pm$ std across seeds where more than one run "
+            "is available.",
             label="tab:anomaly",
         )
     return df
