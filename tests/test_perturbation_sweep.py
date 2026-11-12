@@ -59,6 +59,32 @@ class TestSweepHelpers(unittest.TestCase):
             self.assertIn(key, result)
             self.assertTrue(np.isfinite(result[key]) or np.isnan(result[key]))
 
+    def test_daily_linear_resolves_sub_dekad_shifts(self):
+        """Daily interpolation recovers a 2-day shift, not 0 or ±10."""
+        import datetime
+
+        doy = np.array(
+            [
+                datetime.date(2010, m, d).timetuple().tm_yday
+                for m in range(1, 13)
+                for d in (5, 15, 25)
+            ],
+            dtype=float,
+        )
+        rows = [
+            {
+                "site_id": "a",
+                "year": 2010,
+                "doy": day,
+                "lai_base": _curve(doy)[k],
+                "lai_pert": _curve(doy, shift=-2.0)[k],
+            }
+            for k, day in enumerate(doy)
+        ]
+        df = pd.DataFrame(rows)
+        daily = S._phenology_deltas(df, 0.10, daily=True)["median_dsos_10"]
+        self.assertLess(abs(daily - (-2.0)), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

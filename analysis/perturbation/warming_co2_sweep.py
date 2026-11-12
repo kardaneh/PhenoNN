@@ -93,15 +93,47 @@ def _make_perturbation(
     )
 
 
-def _phenology_deltas(df: pd.DataFrame, fraction: float = DEFAULT_FRACTION) -> dict:
-    """Median ΔSOS / ΔEOS / ΔLOS across site-years for one threshold."""
+def _daily_curve(doy: np.ndarray, lai: np.ndarray, year: int):
+    """Linear dekad-to-daily interpolation, identical to the datagen step."""
+    import datetime
+
+    days = np.arange(1, 366, dtype=np.float64)
+    anchors = np.array(
+        [
+            datetime.date(int(year), m, d).timetuple().tm_yday
+            for m in range(1, 13)
+            for d in (5, 15, 25)
+        ],
+        dtype=np.float64,
+    )
+    finite = np.isfinite(lai) & np.isfinite(doy)
+    if finite.sum() < 2:
+        return days, np.full(days.size, np.nan)
+    return days, np.interp(days, anchors[finite], lai[finite])
+
+
+def _phenology_deltas(
+    df: pd.DataFrame, fraction: float = DEFAULT_FRACTION, daily: bool = False
+) -> dict:
+    """Median ΔSOS / ΔEOS / ΔLOS across site-years for one threshold.
+
+    ``daily=True`` first applies the same linear dekad-to-daily interpolation
+    used to build ``LAI_daily_linear`` (the report's phenology extraction), so
+    the dates are no longer quantized to 10 days.
+    """
     tag = f"{int(round(100 * fraction))}"
     rows = []
     for _key, group in df.groupby(["site_id", "year"], sort=True):
         group = group.sort_values("doy")
         doy = group["doy"].to_numpy()
-        base = M.sos_eos_curve(doy, group["lai_base"].to_numpy(), fractions=(fraction,))
-        pert = M.sos_eos_curve(doy, group["lai_pert"].to_numpy(), fractions=(fraction,))
+        base = group["lai_base"].to_numpy()
+        pert = group["lai_pert"].to_numpy()
+        if daily:
+            year = int(group["year"].iloc[0])
+            doy, base = _daily_curve(doy, base, year)
+            _, pert = _daily_curve(group["doy"].to_numpy(), pert, year)
+        base = M.sos_eos_curve(doy, base, fractions=(fraction,))
+        pert = M.sos_eos_curve(doy, pert, fractions=(fraction,))
         rows.append(
             {
                 f"dsos_{tag}": pert[f"sos_{tag}"] - base[f"sos_{tag}"],
@@ -182,7 +214,7 @@ def _summarise(
         "n_site_years": int(df.groupby(["site_id", "year"]).ngroups),
         "flag": _out_of_range(ctx, df, delta_t, mode, args),
     }
-    row.update(_phenology_deltas(df, args.sos_fraction))
+    row.update(_phenology_deltas(df, args.sos_fraction, daily=args.daily_linear))
     return row
 
 
@@ -225,6 +257,13 @@ def main() -> None:
         type=float,
         default=DEFAULT_FRACTION,
         help="LAI threshold fraction for SOS/EOS (default 0.10).",
+    )
+    parser.add_argument(
+        "--daily_linear",
+        action="store_true",
+        help="Interpolate the 36 dekadal values to daily (as in "
+        "LAI_daily_linear) before extracting SOS/EOS, so the dates are not "
+        "quantized to 10 days.",
     )
     parser.add_argument(
         "--output_csv",
