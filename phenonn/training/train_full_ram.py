@@ -80,6 +80,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 
+from phenonn.data.normalisation import describe_specs
 from phenonn.utils.config import FEATURE_CHANNELS, PFT_START
 from phenonn.data.lai_dataset import (
     RamLAIDataset,
@@ -323,7 +324,9 @@ def load_norm_stats(args, logger):
         raise FileNotFoundError(args.stats_path)
     with open(args.stats_path) as f:
         norm_stats = json.load(f)
-    logger.info(f"Norm stats      : {args.stats_path}  ({len(norm_stats)} entries)")
+    n_entries = sum(1 for key in norm_stats if key != "_transforms")
+    logger.info(f"Norm stats      : {args.stats_path}  ({n_entries} entries)")
+    logger.info(f"Transforms      : {describe_specs(norm_stats)}")
     return norm_stats
 
 

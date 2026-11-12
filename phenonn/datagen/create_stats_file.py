@@ -62,11 +62,12 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import xarray as xr
 
+from phenonn.data.normalisation import finalise_specs
 from phenonn.datagen.config import (
     CO2_FEATURES,
     DYNAMIC_FEATURES,
@@ -77,6 +78,7 @@ from phenonn.datagen.config import (
     PFT_FNAME,
     TARGETS_FNAME,
 )
+from phenonn.datagen.norm_profiles import resolve_profile
 
 
 # ── Torch-free local helpers (importing lai_dataset would pull torch) ────────
@@ -220,6 +222,44 @@ class RunningStats:
         return {"mean": mean, "std": max(std, 1e-8)}
 
 
+class ChannelAccumulator:
+    """Raw / log1p / sqrt moments plus a seeded quantile subsample.
+
+    The raw (or log1p) moments reproduce the historical ``mean``/``std``
+    exactly; the extra maps only exist to describe the alternative transforms.
+    """
+
+    def __init__(self, per_year: int = 4000) -> None:
+        self.raw = RunningStats()
+        self.log = RunningStats()
+        self.sqrt = RunningStats()
+        self.cbrt = RunningStats()
+        self.asinh = RunningStats()
+        self.per_year = per_year
+        self._samples: List[np.ndarray] = []
+
+    def update(self, values: np.ndarray, rng: np.random.Generator) -> None:
+        """Fold one array into the three moment sets and the quantile pool."""
+        x = np.asarray(values, dtype=np.float32)
+        self.raw.update_from_array(x)
+        self.log.update_from_array(np.log1p(np.clip(x, 0.0, None)))
+        self.sqrt.update_from_array(np.sqrt(np.clip(x, 0.0, None)))
+        self.cbrt.update_from_array(np.cbrt(np.clip(x, 0.0, None)))
+        self.asinh.update_from_array(np.arcsinh(x))
+        flat = x[np.isfinite(x)]
+        take = min(self.per_year, flat.size)
+        if take:
+            idx = rng.choice(flat.size, size=take, replace=False)
+            self._samples.append(flat[idx].astype(np.float64))
+
+    def percentiles(self, qs: Sequence[float]) -> Dict[str, float]:
+        """Quantiles from the pooled subsample (empty when no data)."""
+        if not self._samples:
+            return {}
+        pooled = np.concatenate(self._samples)
+        return {f"p{q:g}": float(v) for q, v in zip(qs, np.percentile(pooled, qs))}
+
+
 # ── Per-year scans ───────────────────────────────────────────────────────────
 
 
@@ -249,7 +289,7 @@ def _site_sel(n_site: int, n_sites: int, seed: int) -> Optional[np.ndarray]:
 
 def _scan_features_year(
     path: Path,
-    accs: Dict[str, RunningStats],
+    accs: Dict[str, ChannelAccumulator],
     n_sites: int,
     seed: int,
 ) -> None:
@@ -271,14 +311,12 @@ def _scan_features_year(
     # h5netcdf here would load a second bundled libhdf5 → "NetCDF: HDF error".
     ds = xr.open_dataset(path, engine="netcdf4")
     sel = _site_sel(ds.sizes.get("site", 0), n_sites, seed)
+    rng = np.random.default_rng(seed)
     for feat in DYNAMIC_FEATURES:
         if feat not in ds:
             continue
         da = ds[feat] if sel is None else ds[feat].isel(site=sel)
-        arr = da.values.astype(np.float32)
-        if feat in LOG_TRANSFORM_FEATURES:
-            arr = np.log1p(np.clip(arr, 0.0, None))
-        accs[feat].update_from_array(arr)
+        accs[feat].update(np.asarray(da.values, dtype=np.float32), rng)
     ds.close()
 
 
@@ -399,8 +437,11 @@ def parse_args():
     )
     p.add_argument("--year_start", type=int, required=True)
     p.add_argument("--year_end", type=int, required=True)
+    p.add_argument("--output", default="", help="Path of the norm_stats.json to write.")
     p.add_argument(
-        "--output", required=True, help="Path of the norm_stats.json to write."
+        "--output_dir",
+        default="",
+        help="Write one <profile>/norm_stats_<y0>_<y1>.json per profile.",
     )
     p.add_argument(
         "--n_sites",
@@ -412,6 +453,22 @@ def parse_args():
     )
     p.add_argument(
         "--seed", type=int, default=0, help="RNG seed for the --n_sites subsampling."
+    )
+    p.add_argument(
+        "--profile",
+        default="legacy",
+        help="Transform profile(s), comma separated: legacy, n1, n2, n3 "
+        "(one scan can emit several with --output_dir).",
+    )
+    p.add_argument(
+        "--transform_spec",
+        default="",
+        help="JSON with per-channel transforms; overrides --profile.",
+    )
+    p.add_argument(
+        "--percentiles",
+        default="1,99",
+        help="Bounds used by minmax profiles, e.g. '1,99'.",
     )
     return p.parse_args()
 
@@ -430,6 +487,10 @@ def main():
         If ``args.co2_path`` is set but the file does not exist.
     """
     args = parse_args()
+    if not args.output and not args.output_dir:
+        raise ValueError("provide --output or --output_dir")
+    if args.output and args.output_dir:
+        raise ValueError("use either --output or --output_dir, not both")
     features_dir = Path(args.features_dir).resolve()
     target_dir = Path(args.target_dir).resolve()
     pft_dir = Path(args.pft_dir).resolve()
@@ -445,7 +506,7 @@ def main():
     )
     print(f"Output       : {args.output}")
 
-    dyn_accs = {feat: RunningStats() for feat in DYNAMIC_FEATURES}
+    dyn_accs = {feat: ChannelAccumulator() for feat in DYNAMIC_FEATURES}
     pft_accs = {feat: RunningStats() for feat in PFT_COLS}
     lai_acc = RunningStats()
 
@@ -486,7 +547,10 @@ def main():
     # ── Assemble stats dict ──
     stats: Dict[str, Dict[str, float]] = {}
     for feat in DYNAMIC_FEATURES:
-        stats[feat] = dyn_accs[feat].mean_std()
+        acc = dyn_accs[feat]
+        stats[feat] = (
+            acc.log.mean_std() if feat in LOG_TRANSFORM_FEATURES else acc.raw.mean_std()
+        )
     for feat in PFT_COLS:
         stats[feat] = pft_accs[feat].mean_std()
     stats["LAI"] = lai_acc.mean_std()
@@ -498,14 +562,57 @@ def main():
         if CO2_FEATURES:
             stats["co2"] = _co2_stats(lut, years)
 
+    # ── Optional per-channel transform block ──
+    q_lo, q_hi = (float(v) for v in args.percentiles.split(","))
+    percentiles = {
+        feat: dyn_accs[feat].percentiles((q_lo, q_hi)) for feat in DYNAMIC_FEATURES
+    }
+    # A channel has different moments in raw / log1p / sqrt space; each spec
+    # must carry the ones matching its own kind.
+    moments = {
+        feat: {
+            "zscore": dyn_accs[feat].raw.mean_std(),
+            "log1p_zscore": dyn_accs[feat].log.mean_std(),
+            "sqrt_zscore": dyn_accs[feat].sqrt.mean_std(),
+            "cbrt_zscore": dyn_accs[feat].cbrt.mean_std(),
+            "asinh_zscore": dyn_accs[feat].asinh.mean_std(),
+        }
+        for feat in DYNAMIC_FEATURES
+    }
+
     print("\nResulting stats:")
     for feat, s in stats.items():
         print(f"  {feat:20s}  mean={s['mean']:+.4f}  std={s['std']:.4f}")
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
-    with open(args.output, "w") as f:
-        json.dump(stats, f, indent=2)
-    print(f"\n✓ saved to {args.output}")
+    profiles = [p.strip() for p in args.profile.split(",") if p.strip()]
+    if args.transform_spec and len(profiles) > 1:
+        raise ValueError("--transform_spec works with a single --profile")
+
+    def payload(profile: str) -> Dict[str, object]:
+        data: Dict[str, object] = dict(stats)
+        if args.transform_spec:
+            with open(args.transform_spec) as f:
+                overrides = json.load(f)
+        else:
+            overrides = resolve_profile(profile)
+        if overrides:
+            data["_transforms"] = finalise_specs(overrides, percentiles, moments)
+        return data
+
+    if args.output_dir:
+        y0, y1 = years[0], years[-1]
+        for profile in profiles:
+            path = os.path.join(args.output_dir, profile, f"norm_stats_{y0}_{y1}.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(payload(profile), f, indent=2)
+            n_over = len(payload(profile).get("_transforms", {}))
+            print(f"✓ {profile:8s} -> {path}  ({n_over} overrides)")
+    else:
+        with open(args.output, "w") as f:
+            json.dump(payload(profiles[0]), f, indent=2)
+        n_over = len(payload(profiles[0]).get("_transforms", {}))
+        print(f"\n✓ saved to {args.output}  ({n_over} overrides)")
 
 
 if __name__ == "__main__":

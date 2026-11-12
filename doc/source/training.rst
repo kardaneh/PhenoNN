@@ -83,6 +83,18 @@ Year splits
      - ``val_loss`` (paper default) or ``val_r2`` for the diagnostic
        best-R2 checkpoint.
 
+Per-channel transforms
+~~~~~~~~~~~~~~~~~~~~~~
+
+``--stats_path`` files keep ``{feature: {mean, std}}`` and may add a
+``_transforms`` block selecting one of ``zscore``, ``log1p_zscore``,
+``sqrt_zscore``, ``minmax`` or ``none`` per channel. Without that block the
+historical rule applies (``log1p`` then z-score for ``LOG_TRANSFORM_FEATURES``,
+z-score otherwise), so old stats files and checkpoints reproduce the previous
+behaviour exactly. Build named profiles with
+``create_stats_file.py --profile {legacy,n1,n2,n3}``; the profiles are defined
+in ``phenonn/datagen/norm_profiles.py``.
+
 Protocol A (reproduction) trains on 1992--2009 and reports on 2010--2019,
 so validation and test share a decade and the reported scores are
 optimistic. Protocol B (unbiased) trains on 1992--2006, validates on

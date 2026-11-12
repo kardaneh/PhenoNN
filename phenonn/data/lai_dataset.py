@@ -76,7 +76,6 @@ from phenonn.utils.config import (
     CYCLIC_FEATURES,
     DYNAMIC_FEATURES,
     FEATURES_FNAME,
-    LOG_TRANSFORM_FEATURES,
     N_DEKAD_YEAR,
     N_PFT,
     PFT_COLS,
@@ -86,6 +85,7 @@ from phenonn.utils.config import (
     VALID_FNAME,
     add_co2_features,
 )
+from phenonn.data.normalisation import forward_numpy, get_spec
 from phenonn.utils.wrappers import _OBS_POSITIONS
 
 # Daily-LAI mode (--daily_lai): 365-day interpolated target files and the
@@ -861,43 +861,24 @@ class RamLAIDataset(Dataset):
         # Dynamic features (per year, in place).
         for arr in self._dyn.values():
             for i, name in enumerate(DYNAMIC_FEATURES):
-                col = arr[:, :, i]
-                if name in LOG_TRANSFORM_FEATURES:
-                    col = np.log1p(np.clip(col, 0.0, None))
-                mu = float(self.norm_stats[name]["mean"])
-                sd = float(self.norm_stats[name]["std"])
-                arr[:, :, i] = (col - mu) / max(sd, 1e-8)
+                arr[:, :, i] = forward_numpy(
+                    arr[:, :, i], get_spec(self.norm_stats, name)
+                )
 
-        # PFT vectors (vectorised over the 15 channels, in place).
-        pft_mask = np.array([n in self.norm_stats for n in PFT_COLS], dtype=bool)
-        pft_mu = np.array(
-            [
-                float(self.norm_stats[n]["mean"]) if n in self.norm_stats else 0.0
-                for n in PFT_COLS
-            ],
-            dtype=np.float64,
-        )
-        pft_sd = np.array(
-            [
-                max(float(self.norm_stats[n]["std"]), 1e-8)
-                if n in self.norm_stats
-                else 1.0
-                for n in PFT_COLS
-            ],
-            dtype=np.float64,
-        )
+        # PFT vectors (in place). Absent channels stay raw, as before.
+        pft_specs = [get_spec(self.norm_stats, name) for name in PFT_COLS]
         for ydict in self._pft.values():
             for vec in ydict.values():
-                norm = (vec.astype(np.float64) - pft_mu) / pft_sd
-                vec[pft_mask] = norm[pft_mask].astype(np.float32)
+                for k, spec in enumerate(pft_specs):
+                    if spec["kind"] == "none":
+                        continue
+                    vec[k] = forward_numpy(vec[k].astype(np.float64), spec)
 
         # Cyclic window (deterministic → normalise once).
         if self._cyclic_window is not None:
             cyc = self._cyclic_window.copy()
             for i, name in enumerate(CYCLIC_FEATURES):
-                mu = float(self.norm_stats[name]["mean"])
-                sd = float(self.norm_stats[name]["std"])
-                cyc[i] = (cyc[i] - mu) / max(sd, 1e-8)
+                cyc[i] = forward_numpy(cyc[i], get_spec(self.norm_stats, name))
             self._cyclic_norm = cyc
 
         # CO2 scalar per year.
@@ -907,10 +888,7 @@ class RamLAIDataset(Dataset):
                 if raw is None:
                     continue
                 c = np.array([raw], dtype=np.float32)
-                if "co2" in self.norm_stats:
-                    mu = float(self.norm_stats["co2"]["mean"])
-                    sd = float(self.norm_stats["co2"]["std"])
-                    c = (c - mu) / max(sd, 1e-8)
+                c = forward_numpy(c, get_spec(self.norm_stats, "co2"))
                 self._co2_val[int(y)] = float(c[0])
 
     # ── Phase 5: sample index ──────────────────────────────────────────────
@@ -1195,9 +1173,7 @@ class RamLAIDataset(Dataset):
             and self.norm_stats is not None
             and "LAI" in self.norm_stats
         ):
-            mu = float(self.norm_stats["LAI"]["mean"])
-            sd = float(self.norm_stats["LAI"]["std"])
-            return (target - mu) / max(sd, 1e-8)
+            return forward_numpy(target, get_spec(self.norm_stats, "LAI"))
         return target
 
     # ── Dataset interface ──────────────────────────────────────────────────

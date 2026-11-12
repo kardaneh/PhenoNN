@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from phenonn.data.normalisation import get_spec, inverse_torch, physical_zero
 from phenonn.utils.config import N_PFT, PFT_START
 
 
@@ -301,10 +302,9 @@ class PFTMixingWrapper(nn.Module):
         # z-scored LAI space). Guarantees L_k ≥ 0 physically while keeping the
         # additive mixing consistent. z0 = 0 when LAI is not normalized.
         self.nonneg = nonneg
+        lai_spec = get_spec(norm_stats, "LAI")
         if nonneg and lai_normalized and norm_stats is not None and "LAI" in norm_stats:
-            self.nonneg_z0 = -float(norm_stats["LAI"]["mean"]) / max(
-                float(norm_stats["LAI"]["std"]), 1e-8
-            )
+            self.nonneg_z0 = physical_zero(lai_spec)
         else:
             self.nonneg_z0 = 0.0
 
@@ -318,9 +318,7 @@ class PFTMixingWrapper(nn.Module):
         if zero_pft1_lai:
             lai_mask[0, 0, 0] = 0.0
             if lai_normalized and norm_stats is not None and "LAI" in norm_stats:
-                lai_mean = float(norm_stats["LAI"]["mean"])
-                lai_std = float(norm_stats["LAI"]["std"])
-                lai_bias[0, 0, 0] = -lai_mean / max(lai_std, 1e-8)
+                lai_bias[0, 0, 0] = physical_zero(lai_spec)
         self.register_buffer("lai_pft_mask", lai_mask, persistent=False)
         self.register_buffer("lai_pft_bias", lai_bias, persistent=False)
 
@@ -341,6 +339,13 @@ class PFTMixingWrapper(nn.Module):
             stds = torch.ones(1, n_pft, 1, dtype=torch.float32)
         self.register_buffer("pft_means", means)
         self.register_buffer("pft_stds", stds)
+
+        # Per-channel specs for the inverse map. Legacy stats give zscore for
+        # every channel, so the vectorised path above stays bit-identical.
+        self._pft_specs = [
+            get_spec(norm_stats, f"pft{k}_frac") for k in range(1, n_pft + 1)
+        ]
+        self._pft_all_zscore = all(s["kind"] == "zscore" for s in self._pft_specs)
 
     def _forward_components(self, x: torch.Tensor):
         """Return ``(mixed, lai_pure, pft_real)`` in the model's LAI space."""
@@ -364,7 +369,16 @@ class PFTMixingWrapper(nn.Module):
 
         # Recover PFT physical fractions from the last input timestep
         pft_norm = x[:, self.pft_start : self.pft_start + self.n_pft, -1:]
-        pft_real = pft_norm * self.pft_stds + self.pft_means
+        if self._pft_all_zscore:
+            pft_real = pft_norm * self.pft_stds + self.pft_means
+        else:
+            pft_real = torch.cat(
+                [
+                    inverse_torch(pft_norm[:, k : k + 1], spec)
+                    for k, spec in enumerate(self._pft_specs)
+                ],
+                dim=1,
+            )
         pft_real = pft_real.clamp(min=0.0)
         if self.renormalize:
             tot = pft_real.sum(dim=1, keepdim=True).clamp(min=1e-6)
