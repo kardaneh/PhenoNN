@@ -105,6 +105,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from phenonn.data.normalisation import get_spec, inverse_numpy
 from phenonn.utils.config import ALL_FEATURES, PFT_FNAME, PFT_NAMES
 from phenonn.utils.logger import Logger
 from phenonn.utils.wrappers import _OBS_POSITIONS
@@ -327,6 +328,10 @@ def load_checkpoint(args, device: torch.device, logger: Logger) -> Dict:
         "daily_lai": daily_lai,
         "train_site_ids": train_site_ids,
         "val_site_ids": val_site_ids,
+        # Required by resolve_climatology() to validate an anomaly window.
+        "clim_years": parse_years(
+            raw.get("clim_years") or train_args.get("clim_years", "")
+        ),
     }
 
     logger.success(
@@ -771,13 +776,12 @@ def _denormalise_row(
     denorm_lai,
     anomaly_clim,
     norm_stats,
-    lai_mean,
-    lai_std,
+    lai_spec,
 ):
     """
     Return the ``(pred_real, tgt_real, pred_norm, tgt_norm)`` tuple for one row.
 
-    Handles the three flavours of training target: anomaly, z-scored LAI,
+    Handles the three flavours of training target: anomaly, normalised LAI,
     raw LAI.
 
     Parameters
@@ -789,8 +793,8 @@ def _denormalise_row(
     is_anomaly, denorm_lai : bool
     anomaly_clim : dict or None
     norm_stats : dict or None
-    lai_mean, lai_std : float
-        LAI z-scoring statistics, used only when ``denorm_lai`` is True.
+    lai_spec : mapping
+        Target transform spec, used only when ``denorm_lai`` is True.
 
     Returns
     -------
@@ -811,8 +815,8 @@ def _denormalise_row(
         return pred_v + clim_vec, tgt_v + clim_vec, pred_v, tgt_v
     if denorm_lai:
         return (
-            pred_v * lai_std + lai_mean,
-            tgt_v * lai_std + lai_mean,
+            inverse_numpy(pred_v, lai_spec),
+            inverse_numpy(tgt_v, lai_spec),
             pred_v,
             tgt_v,
         )
@@ -860,9 +864,7 @@ def run_inference(
     if is_daily:
         logger.info("Daily model   : sampling the 365-day output at the 36 dekads")
 
-    if denorm_lai:
-        lai_mean = float(norm_stats["LAI"]["mean"])
-        lai_std = float(norm_stats["LAI"]["std"])
+    lai_spec = get_spec(norm_stats, "LAI") if denorm_lai else {"kind": "none"}
 
     logger.start_task("Running inference", f"{len(dataset):,} samples")
     rows = []
@@ -885,8 +887,7 @@ def run_inference(
                     denorm_lai,
                     anomaly_clim,
                     norm_stats,
-                    lai_mean if denorm_lai else 0.0,
-                    lai_std if denorm_lai else 1.0,
+                    lai_spec,
                 )
                 for k, (month, day, doy) in enumerate(_OBS_DATES):
                     rows.append(

@@ -13,6 +13,8 @@ is kept separate from ``tests.test_leakage`` so the pure leakage tests stay
 dependency-light.
 """
 
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -71,6 +73,43 @@ class TestPredictClimatology(unittest.TestCase):
                 [2010],
                 mock.Mock(),
             )
+
+
+class TestLoadCheckpointSchema(unittest.TestCase):
+    """The normalised checkpoint must keep the climatology window."""
+
+    def _load(self, raw):
+        import torch
+
+        from phenonn.prediction.predict import load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ckpt.pth.tar")
+            torch.save(raw, path)
+            return load_checkpoint(SimpleNamespace(checkpoint=path), "cpu", mock.Mock())
+
+    def test_top_level_clim_years_survive(self):
+        raw = {
+            "state_dict": {"w": None},
+            "args": {"clim_years": "1992-2009"},
+            "epoch": 4,
+            "anomaly_clim": {"site": [0.0] * 36},
+            "anomaly_mode": True,
+            "clim_years": list(range(1992, 2010)),
+        }
+        ckpt = self._load(raw)
+        self.assertEqual(ckpt["clim_years"], list(range(1992, 2010)))
+
+    def test_clim_years_fall_back_to_training_args(self):
+        raw = {
+            "state_dict": {"w": None},
+            "args": {"clim_years": "1992-2009"},
+            "epoch": 4,
+            "anomaly_clim": {"site": [0.0] * 36},
+            "anomaly_mode": True,
+        }
+        ckpt = self._load(raw)
+        self.assertEqual(ckpt["clim_years"], list(range(1992, 2010)))
 
 
 if __name__ == "__main__":

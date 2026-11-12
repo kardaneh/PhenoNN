@@ -48,6 +48,7 @@ import matplotlib.pyplot as plt
 
 from analysis._checkpoint_utils import load_state_dict
 
+from phenonn.data.normalisation import get_spec, inverse_numpy
 from phenonn.utils.config import N_PFT, PFT_NAMES
 from phenonn.data.lai_dataset import (
     RamLAIDataset,
@@ -287,11 +288,7 @@ def main():
 
     # ── Denormalization of LAI back to physical units ──
     lai_normalized = bool(ckpt.get("normalize_lai", True))
-    if lai_normalized and norm_stats is not None and "LAI" in norm_stats:
-        lai_mean = float(norm_stats["LAI"]["mean"])
-        lai_std = float(norm_stats["LAI"]["std"])
-    else:
-        lai_mean, lai_std = 0.0, 1.0
+    lai_spec = get_spec(norm_stats, "LAI") if lai_normalized else {"kind": "none"}
 
     # ── Inference: expose the 15 pure-LAI channels ──
     with torch.no_grad():
@@ -329,9 +326,9 @@ def main():
             pft_real = np.clip(pft_norm * pft_stds + pft_means, 0.0, None)
             pft_real = pft_real / pft_real.sum(axis=1, keepdims=True).clip(1e-6)
 
-    lai_pure_real = lai_pure_norm.cpu().numpy() * lai_std + lai_mean  # (B,15,36)
-    lai_pred_real = (lai_pred_norm.cpu().numpy() * lai_std + lai_mean).squeeze(1)
-    lai_obs_real = (targets.numpy() * lai_std + lai_mean).squeeze(1)
+    lai_pure_real = inverse_numpy(lai_pure_norm.cpu().numpy(), lai_spec)  # (B,15,36)
+    lai_pred_real = inverse_numpy(lai_pred_norm.cpu().numpy(), lai_spec).squeeze(1)
+    lai_obs_real = inverse_numpy(targets.numpy(), lai_spec).squeeze(1)
 
     # ── Per-PFT CSV (long format) ──
     csv_path = args.output_csv or (os.path.splitext(args.output)[0] + ".csv")
