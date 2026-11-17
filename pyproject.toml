@@ -52,7 +52,7 @@ exclude = [
   "pixelset1",
   "runs",
   "cache",
-  "data",
+  "/data",
   "PhenoNN Cleanup*.md",
 ]
 
