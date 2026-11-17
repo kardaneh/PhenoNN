@@ -60,7 +60,9 @@ When ``anomaly_clim`` is provided, the target is replaced by
 ``LAI - climatology(site, dekad)``, and LAI z-scoring is disabled.
 """
 
+import hashlib
 import os
+import shutil
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -76,7 +78,6 @@ from phenonn.utils.config import (
     CYCLIC_FEATURES,
     DYNAMIC_FEATURES,
     FEATURES_FNAME,
-    LOG_TRANSFORM_FEATURES,
     N_DEKAD_YEAR,
     N_PFT,
     PFT_COLS,
@@ -85,6 +86,14 @@ from phenonn.utils.config import (
     TARGETS_FNAME,
     VALID_FNAME,
     add_co2_features,
+)
+from phenonn.data.normalisation import forward_numpy, get_spec
+from phenonn.data.feature_cache import (
+    MODES,
+    FeatureCache,
+    default_cache_dir,
+    feature_key,
+    features_root,
 )
 from phenonn.utils.wrappers import _OBS_POSITIONS
 
@@ -434,6 +443,120 @@ def compute_climatology_lookup(
     return {sid: mean[i] for i, sid in enumerate(wanted)}
 
 
+def _clim_file_tag(path: str) -> str:
+    """Return ``size:mtime`` for a target file, or ``missing``."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "missing"
+    return f"{st.st_size}:{int(st.st_mtime)}"
+
+
+def climatology_key(target_dir: str, years: List[int], site_ids: List[str]) -> str:
+    """Build the disk-cache key for a per-site dekadal climatology.
+
+    Parameters
+    ----------
+    target_dir : str
+        Folder of ``LAI_dekadal_{Y}.nc`` files.
+    years : list of int
+        Years averaged into the climatology.
+    site_ids : list of str
+        Sites requested.
+
+    Returns
+    -------
+    str
+        Short hexadecimal key.
+    """
+    h = hashlib.sha1()
+    h.update(os.path.realpath(target_dir).encode())
+    h.update(b"|")
+    for y in sorted({int(y) for y in years}):
+        path = os.path.join(target_dir, TARGETS_FNAME.format(year=y))
+        h.update(f"{y}:{_clim_file_tag(path)}|".encode())
+    sites = "\n".join(sorted({str(s) for s in site_ids}))
+    h.update(hashlib.sha1(sites.encode()).hexdigest().encode())
+    return h.hexdigest()[:16]
+
+
+def cached_climatology_lookup(
+    target_dir: str,
+    clim_years: List[int],
+    wanted_sites: List[str],
+    cache_dir: str = "",
+    mode: str = "auto",
+    verbose: bool = False,
+) -> Dict[str, np.ndarray]:
+    """Return a per-site climatology, reusing a disk cache when possible.
+
+    The payload is small (36 float32 per site) and identical for every model
+    trained on the same years and sites, so it is cached as one ``.npz``
+    under ``<cache_dir>/climatology/<key>.npz``.
+
+    Parameters
+    ----------
+    target_dir : str
+        Folder of ``LAI_dekadal_{Y}.nc`` files.
+    clim_years : list of int
+        Years to average.
+    wanted_sites : list of str
+        Sites to return.
+    cache_dir : str, optional
+        Cache root; empty resolves through
+        :func:`phenonn.data.feature_cache.default_cache_dir`.
+    mode : {"off", "read", "write", "auto"}, optional
+        ``off`` always recomputes, ``read`` uses the cache when present,
+        ``write`` recomputes and stores, ``auto`` does both.
+    verbose : bool, optional
+        Print cache hits and writes.
+
+    Returns
+    -------
+    dict
+        ``{site_id: (36,) float32}``.
+    """
+    if mode not in ("off", "read", "write", "auto"):
+        raise ValueError(f"unknown climatology cache mode {mode!r}")
+    wanted = sorted(set(str(s) for s in wanted_sites))
+    if not wanted or not clim_years:
+        return {}
+
+    root = os.path.abspath(cache_dir or default_cache_dir())
+    key = climatology_key(target_dir, clim_years, wanted)
+    path = os.path.join(root, "climatology", key + ".npz")
+
+    if mode in ("read", "auto") and os.path.exists(path):
+        with np.load(path, allow_pickle=False) as data:
+            sites = [str(s) for s in data["sites"]]
+            matrix = data["clim"]
+        if sites == wanted:
+            if verbose:
+                print(f"  [clim] cache hit {key} ({len(sites):,} sites)")
+            return {sid: matrix[i] for i, sid in enumerate(sites)}
+
+    clim = compute_climatology_lookup(
+        target_dir=target_dir,
+        clim_years=clim_years,
+        wanted_sites=wanted,
+        verbose=verbose,
+    )
+
+    if mode in ("write", "auto"):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            matrix = np.stack([clim[s] for s in wanted]).astype(np.float32)
+            tmp = path + ".tmp.npz"
+            np.savez(tmp, sites=np.asarray(wanted), clim=matrix)
+            os.replace(tmp, path)
+            if verbose:
+                print(f"  [clim] cache write {key} ({len(wanted):,} sites)")
+        except OSError as exc:  # pragma: no cover - disk full / permissions
+            print(f"  [clim] cache write skipped: {exc}")
+
+    return clim
+
+
 # ── Valid-pixels mask and site pools ────────────────────────────────────────
 
 
@@ -599,6 +722,17 @@ class RamLAIDataset(Dataset):
     daily_target_dir : str, optional
         Directory containing ``LAI_daily_{Y}.nc`` files. Required
         when ``daily_mode`` is ``"interp"``.
+    cache_dir : str, optional
+        Root of the optional raw-feature cache. Empty resolves through
+        :func:`phenonn.data.feature_cache.default_cache_dir`.
+    feature_cache : {"off", "read", "write", "auto"}, optional
+        Cache policy. ``off`` (default) keeps the NetCDF path; ``read``
+        uses a complete entry if present and otherwise falls back to the
+        NetCDF files; ``write`` reads the NetCDF files and stores an entry;
+        ``auto`` does both. Entries are raw, so one entry serves every
+        normalisation profile.
+    parent_map_path : str, optional
+        Path the parent map was read from. Only used as a cache-key input.
 
     Examples
     --------
@@ -630,10 +764,17 @@ class RamLAIDataset(Dataset):
         parent_map: Optional[Dict[str, str]] = None,
         daily_mode: str = "off",
         daily_target_dir: str = "",
+        cache_dir: str = "",
+        feature_cache: str = "off",
+        parent_map_path: str = "",
     ) -> None:
         super().__init__()
         if daily_mode not in ("off", "interp", "obs"):
             raise ValueError(f"daily_mode must be off/interp/obs, got {daily_mode!r}")
+        if feature_cache not in MODES:
+            raise ValueError(
+                f"feature_cache must be one of {MODES}, got {feature_cache!r}"
+            )
 
         self.features_dir = features_dir
         self.target_dir = target_dir
@@ -645,9 +786,31 @@ class RamLAIDataset(Dataset):
         self.normalize_lai = normalize_lai
         self.daily_mode = daily_mode
         self.parent_map = parent_map
+        self.parent_map_path = parent_map_path
+        self.feature_cache_mode = feature_cache
+        self.cache_dir = cache_dir or default_cache_dir()
+        self.cache_key: Optional[str] = None
         self._cyclic_window = self._build_cyclic_window()
 
         target_years = sorted(set(int(y) for y in years))
+        # A target year needs the feature file of Y-1 for its 720-day window.
+        # Dropping those years up front avoids reading their LAI/PFT tables
+        # only to discard every sample afterwards (the 1992 case in protocol A).
+        missing_prev = [
+            y
+            for y in target_years
+            if not os.path.exists(
+                os.path.join(features_dir, FEATURES_FNAME.format(year=y - 1))
+            )
+        ]
+        if missing_prev:
+            target_years = [y for y in target_years if y not in missing_prev]
+            if verbose:
+                print(
+                    "  [load] target years without previous-year features: "
+                    f"{missing_prev}",
+                    flush=True,
+                )
         feature_years = sorted(set(target_years) | {y - 1 for y in target_years})
         site_list = list(dict.fromkeys(site_ids))
 
@@ -669,12 +832,25 @@ class RamLAIDataset(Dataset):
         # ── Phase 1: raw daily features → RAM ──────────────────────────────
         self._dyn: Dict[int, np.ndarray] = {}
         self._row: Dict[int, Dict[str, int]] = {}
-        self._read_dynamic_features(
-            feature_years,
-            site_list,
-            threaded_read,
-            verbose,
-        )
+        cache = None
+        from_cache = False
+        if feature_cache != "off":
+            self.cache_key = feature_key(
+                self.features_dir, feature_years, site_list, parent_map_path
+            )
+            cache = FeatureCache(self.cache_dir, self.cache_key)
+            if feature_cache in ("read", "auto") and cache.exists():
+                self._load_from_cache(cache, feature_years, verbose)
+                from_cache = True
+        if not from_cache:
+            self._read_dynamic_features(
+                feature_years,
+                site_list,
+                threaded_read,
+                verbose,
+            )
+            if cache is not None and feature_cache in ("write", "auto"):
+                self._write_feature_cache(cache, verbose)
 
         # ── Phase 2: LAI / PFT / daily LAI vectors → RAM ───────────────────
         self._targ: Dict[int, Dict[str, np.ndarray]] = {}
@@ -711,6 +887,99 @@ class RamLAIDataset(Dataset):
         self._build_sample_index(target_years, site_list, verbose)
 
     # ── Phase 1: dynamic features ──────────────────────────────────────────
+
+    def _load_from_cache(
+        self,
+        cache: FeatureCache,
+        feature_years: List[int],
+        verbose: bool,
+    ) -> None:
+        """Populate ``_dyn`` and ``_row`` from a complete cache entry.
+
+        Parameters
+        ----------
+        cache : FeatureCache
+            Entry already checked with :meth:`FeatureCache.exists`.
+        feature_years : list of int
+            Years requested; the entry is filtered to this set defensively.
+        verbose : bool
+            Print one hit line.
+        """
+        meta = cache.meta()
+        wanted = {int(y) for y in feature_years}
+        for year_key, info in meta.get("years", {}).items():
+            year = int(year_key)
+            if year not in wanted:
+                continue
+            sites = [str(s) for s in info["sites"]]
+            self._row[year] = {sid: i for i, sid in enumerate(sites)}
+            self._dyn[year] = cache.read_year(year)
+        if verbose:
+            n_sites = max((a.shape[0] for a in self._dyn.values()), default=0)
+            print(
+                f"  [cache] hit {cache.key}  {len(self._dyn)} years  "
+                f"{n_sites:,} sites  ({cache.path})",
+                flush=True,
+            )
+
+    def _write_feature_cache(self, cache: FeatureCache, verbose: bool) -> None:
+        """Store the raw ``_dyn`` arrays in the cache, atomically.
+
+        Called before :meth:`_prenormalise`, so the entry stays raw and can
+        serve every normalisation profile.
+
+        Parameters
+        ----------
+        cache : FeatureCache
+        verbose : bool
+        """
+        if not self._dyn:
+            return
+        years = {
+            int(y): {
+                "t": int(arr.shape[1]),
+                "n_sites": int(arr.shape[0]),
+                "sites": list(self._row[y]),
+            }
+            for y, arr in self._dyn.items()
+        }
+        expected = FeatureCache.expected_bytes(years)
+        try:
+            os.makedirs(features_root(cache.root), exist_ok=True)
+            free = shutil.disk_usage(cache.root).free
+        except OSError as exc:  # pragma: no cover - permissions
+            print(f"  [cache] write skipped: {exc}", flush=True)
+            return
+        headroom = 10 * 1024**3
+        if free < expected * 1.2 + headroom:
+            print(
+                f"  [cache] write skipped: needs {expected / 1024**3:.1f} GiB, "
+                f"{free / 1024**3:.1f} GiB free under {cache.root}",
+                flush=True,
+            )
+            return
+
+        with cache.lock():
+            if cache.exists():
+                if verbose:
+                    print(f"  [cache] entry {cache.key} already exists", flush=True)
+                return
+            cache.begin(years)
+            try:
+                for year, arr in self._dyn.items():
+                    cache.write_year(year, arr)
+                    if verbose:
+                        print(f"  [cache] wrote {year}", flush=True)
+                cache.commit()
+            except BaseException:
+                cache.abort()
+                raise
+        if verbose:
+            print(
+                f"  [cache] stored {cache.key}  {expected / 1024**3:.1f} GiB  "
+                f"({cache.path})",
+                flush=True,
+            )
 
     def _read_dynamic_features(
         self,
@@ -860,44 +1129,30 @@ class RamLAIDataset(Dataset):
         """
         # Dynamic features (per year, in place).
         for arr in self._dyn.values():
+            if not arr.flags.writeable:
+                raise RuntimeError(
+                    "feature arrays must be writable before normalisation; "
+                    "the cache must return a copy"
+                )
             for i, name in enumerate(DYNAMIC_FEATURES):
-                col = arr[:, :, i]
-                if name in LOG_TRANSFORM_FEATURES:
-                    col = np.log1p(np.clip(col, 0.0, None))
-                mu = float(self.norm_stats[name]["mean"])
-                sd = float(self.norm_stats[name]["std"])
-                arr[:, :, i] = (col - mu) / max(sd, 1e-8)
+                arr[:, :, i] = forward_numpy(
+                    arr[:, :, i], get_spec(self.norm_stats, name)
+                )
 
-        # PFT vectors (vectorised over the 15 channels, in place).
-        pft_mask = np.array([n in self.norm_stats for n in PFT_COLS], dtype=bool)
-        pft_mu = np.array(
-            [
-                float(self.norm_stats[n]["mean"]) if n in self.norm_stats else 0.0
-                for n in PFT_COLS
-            ],
-            dtype=np.float64,
-        )
-        pft_sd = np.array(
-            [
-                max(float(self.norm_stats[n]["std"]), 1e-8)
-                if n in self.norm_stats
-                else 1.0
-                for n in PFT_COLS
-            ],
-            dtype=np.float64,
-        )
+        # PFT vectors (in place). Absent channels stay raw, as before.
+        pft_specs = [get_spec(self.norm_stats, name) for name in PFT_COLS]
         for ydict in self._pft.values():
             for vec in ydict.values():
-                norm = (vec.astype(np.float64) - pft_mu) / pft_sd
-                vec[pft_mask] = norm[pft_mask].astype(np.float32)
+                for k, spec in enumerate(pft_specs):
+                    if spec["kind"] == "none":
+                        continue
+                    vec[k] = forward_numpy(vec[k].astype(np.float64), spec)
 
         # Cyclic window (deterministic → normalise once).
         if self._cyclic_window is not None:
             cyc = self._cyclic_window.copy()
             for i, name in enumerate(CYCLIC_FEATURES):
-                mu = float(self.norm_stats[name]["mean"])
-                sd = float(self.norm_stats[name]["std"])
-                cyc[i] = (cyc[i] - mu) / max(sd, 1e-8)
+                cyc[i] = forward_numpy(cyc[i], get_spec(self.norm_stats, name))
             self._cyclic_norm = cyc
 
         # CO2 scalar per year.
@@ -907,10 +1162,7 @@ class RamLAIDataset(Dataset):
                 if raw is None:
                     continue
                 c = np.array([raw], dtype=np.float32)
-                if "co2" in self.norm_stats:
-                    mu = float(self.norm_stats["co2"]["mean"])
-                    sd = float(self.norm_stats["co2"]["std"])
-                    c = (c - mu) / max(sd, 1e-8)
+                c = forward_numpy(c, get_spec(self.norm_stats, "co2"))
                 self._co2_val[int(y)] = float(c[0])
 
     # ── Phase 5: sample index ──────────────────────────────────────────────
@@ -1195,9 +1447,7 @@ class RamLAIDataset(Dataset):
             and self.norm_stats is not None
             and "LAI" in self.norm_stats
         ):
-            mu = float(self.norm_stats["LAI"]["mean"])
-            sd = float(self.norm_stats["LAI"]["std"])
-            return (target - mu) / max(sd, 1e-8)
+            return forward_numpy(target, get_spec(self.norm_stats, "LAI"))
         return target
 
     # ── Dataset interface ──────────────────────────────────────────────────

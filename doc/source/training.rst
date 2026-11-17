@@ -83,6 +83,18 @@ Year splits
      - ``val_loss`` (paper default) or ``val_r2`` for the diagnostic
        best-R2 checkpoint.
 
+Per-channel transforms
+~~~~~~~~~~~~~~~~~~~~~~
+
+``--stats_path`` files keep ``{feature: {mean, std}}`` and may add a
+``_transforms`` block selecting one of ``zscore``, ``log1p_zscore``,
+``sqrt_zscore``, ``cbrt_zscore``, ``asinh_zscore``, ``minmax`` or ``none`` per
+channel. Without that block the default rule applies (``log1p`` then z-score
+for ``LOG_TRANSFORM_FEATURES``, z-score otherwise), so old stats files and
+checkpoints reproduce the previous behaviour exactly. Build named profiles with
+``create_stats_file.py --profile {default,n1,n2,n3,p_sqrt,p_cbrt,p_asinh,p_minmax}``;
+the profiles are defined in ``phenonn/datagen/norm_profiles.py``.
+
 Protocol A (reproduction) trains on 1992--2009 and reports on 2010--2019,
 so validation and test share a decade and the reported scores are
 optimistic. Protocol B (unbiased) trains on 1992--2006, validates on
@@ -118,6 +130,39 @@ Site pool and sampling
    * - ``--col_min``, ``--col_max``
      - Sub-grid bbox on the longitude index, for the ``--valid_dir``
        pool.
+
+Feature cache (optional)
+------------------------
+
+A full pixelset working set is several gigabytes per year, and the same
+arrays are re-read by every run that shares a site set and a year range.
+``--feature_cache`` stores the raw daily arrays once as ``.npy`` files and
+maps them back on demand. Off by default.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Flag
+     - Description
+   * - ``--feature_cache {off,read,write,auto}``
+     - ``off`` (default) reads the NetCDF files. ``read`` uses a matching
+       entry when present. ``write`` reads the NetCDF files and stores an
+       entry. ``auto`` does both.
+   * - ``--cache_dir``
+     - Cache root. Empty uses ``$PHENONN_CACHE_DIR``, then ``./cache``,
+       then ``~/.cache/phenonn``.
+   * - ``--cache_climatology``
+     - Also cache the per-site metric climatology as a small ``.npz``.
+
+Entries are keyed on the feature files (size and mtime), the parent map,
+the year list, the site list and the channel list, so a different seed or
+dataset is a different entry. They store raw values only, which means one
+entry serves every ``--stats_path`` profile, and they are derived data:
+deleting the cache is always safe. Manage it with::
+
+    python -m phenonn.data.feature_cache list
+    python -m phenonn.data.feature_cache rm --all
 
 Model selection
 ---------------

@@ -158,6 +158,28 @@ def parse_args(argv=None):
         help="If > 0, compute phenology on a deterministic subsample of "
         "site-years larger than this.",
     )
+
+    # ── Performance (optional) ──
+    p.add_argument(
+        "--feature_cache",
+        choices=("off", "read", "write", "auto"),
+        default="auto",
+        help="Optional on-disk cache for the raw daily features. 'auto' "
+        "reads a matching entry when present and falls back to the NetCDF "
+        "files otherwise; it never writes unless set to 'write'.",
+    )
+    p.add_argument(
+        "--cache_dir",
+        default="",
+        help="Cache root. Empty uses $PHENONN_CACHE_DIR, then ./cache, then "
+        "~/.cache/phenonn.",
+    )
+    p.add_argument(
+        "--cache_climatology",
+        action="store_true",
+        help="Cache the per-site metric climatology as a small .npz.",
+    )
+
     args = p.parse_args(argv)
     if args.n_curves is None:
         args.n_curves = 100

@@ -35,6 +35,12 @@ from torch.utils.data import DataLoader
 
 from analysis._checkpoint_utils import load_state_dict
 from phenonn.data.lai_dataset import RamLAIDataset, load_parent01_map
+from phenonn.data.normalisation import (
+    forward_numpy,
+    get_spec,
+    inverse_numpy,
+    inverse_torch,
+)
 from phenonn.prediction.predict import _parse_year_spec as parse_year_spec
 from phenonn.prediction.predict import _resolve_sites
 from phenonn.utils.config import N_PFT, PFT_START
@@ -48,31 +54,9 @@ _OBS_DOY = [
 ]
 
 
-def _pft_norm_arrays(norm_stats):
-    """Build normalization arrays for the 15 PFT fraction channels.
-
-    Parameters
-    ----------
-    norm_stats : mapping or None
-        Per-feature normalization statistics from the checkpoint.
-
-    Returns
-    -------
-    tuple
-        ``(mean, std, has)`` arrays. Missing PFT statistics fall back to a mean
-        of zero and a standard deviation of one.
-    """
-    mean = np.zeros(N_PFT, np.float32)
-    std = np.ones(N_PFT, np.float32)
-    has = np.zeros(N_PFT, bool)
-    if norm_stats is not None:
-        for k in range(1, N_PFT + 1):
-            key = f"pft{k}_frac"
-            if key in norm_stats:
-                mean[k - 1] = float(norm_stats[key]["mean"])
-                std[k - 1] = max(float(norm_stats[key]["std"]), 1e-8)
-                has[k - 1] = True
-    return mean, std, has
+def _pft_specs(norm_stats):
+    """Return the transform spec of each of the 15 PFT fraction channels."""
+    return [get_spec(norm_stats, f"pft{k}_frac") for k in range(1, N_PFT + 1)]
 
 
 def main():
@@ -235,13 +219,14 @@ def main():
         dataset, batch_size=args.batch_size, shuffle=False, num_workers=0
     )
 
-    mean, std, has = _pft_norm_arrays(norm_stats)
-    # Normalized pure-PFT input vectors: (15 pfts, 15 channels).
+    pft_specs = _pft_specs(norm_stats)
+    # Encoded pure-PFT input vectors: (15 pfts, 15 channels).
     pure_z = np.zeros((N_PFT, N_PFT), np.float32)
     for i in range(N_PFT):
         phys = np.zeros(N_PFT, np.float32)
         phys[i] = 1.0
-        pure_z[i] = np.where(has, (phys - mean) / std, phys)
+        for k, spec in enumerate(pft_specs):
+            pure_z[i, k] = forward_numpy(phys[k : k + 1], spec)[0]
     pure_z_t = torch.from_numpy(pure_z).to(device)  # (15, 15)
 
     denorm = (
@@ -250,8 +235,7 @@ def main():
         and norm_stats is not None
         and "LAI" in norm_stats
     )
-    lm = float(norm_stats["LAI"]["mean"]) if denorm else 0.0
-    ls = float(norm_stats["LAI"]["std"]) if denorm else 1.0
+    lai_spec = get_spec(norm_stats, "LAI")
 
     rows = []
     idx0 = 0
@@ -263,8 +247,12 @@ def main():
 
             # Real fractions p (denorm from last timestep), clamp, renormalize.
             z_last = x[:, PFT_START : PFT_START + N_PFT, -1]  # (B, 15)
-            p = z_last * torch.tensor(std, device=device) + torch.tensor(
-                mean, device=device
+            p = torch.cat(
+                [
+                    inverse_torch(z_last[:, k : k + 1], spec)
+                    for k, spec in enumerate(pft_specs)
+                ],
+                dim=1,
             )
             p = p.clamp(min=0.0)
             p = p / p.sum(dim=1, keepdim=True).clamp(min=1e-6)
@@ -280,9 +268,21 @@ def main():
             if model_mix is not None:
                 pftmix = (model_mix(x)[:, 0, :] * ls2 + lm2).cpu().numpy()
 
-            direct = (direct * ls + lm).cpu().numpy()
-            mix = (mix * ls + lm).cpu().numpy()
-            obs = (tgts[:, 0, :].numpy() * ls + lm) if denorm else tgts[:, 0, :].numpy()
+            direct = (
+                inverse_numpy(direct.cpu().numpy(), lai_spec)
+                if denorm
+                else direct.cpu().numpy()
+            )
+            mix = (
+                inverse_numpy(mix.cpu().numpy(), lai_spec)
+                if denorm
+                else mix.cpu().numpy()
+            )
+            obs = (
+                inverse_numpy(tgts[:, 0, :].numpy(), lai_spec)
+                if denorm
+                else tgts[:, 0, :].numpy()
+            )
             pnp = p.cpu().numpy()
             for j in range(B):
                 info = dataset.get_site_info(idx0 + j)

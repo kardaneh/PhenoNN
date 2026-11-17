@@ -80,9 +80,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
 
+from phenonn.data.normalisation import describe_specs
 from phenonn.utils.config import FEATURE_CHANNELS, PFT_START
 from phenonn.data.lai_dataset import (
     RamLAIDataset,
+    cached_climatology_lookup,
     compute_climatology_lookup,
     list_valid_sites,
     load_co2_lut,
@@ -132,6 +134,8 @@ class SharedData:
     norm_stats: object
     co2_lut: object
     anomaly_clim: object
+    metric_clim: object
+    metric_clim_years: list
     val_ds: object
     val_loader: object
     train_full: object
@@ -323,7 +327,9 @@ def load_norm_stats(args, logger):
         raise FileNotFoundError(args.stats_path)
     with open(args.stats_path) as f:
         norm_stats = json.load(f)
-    logger.info(f"Norm stats      : {args.stats_path}  ({len(norm_stats)} entries)")
+    n_entries = sum(1 for key in norm_stats if key != "_transforms")
+    logger.info(f"Norm stats      : {args.stats_path}  ({n_entries} entries)")
+    logger.info(f"Transforms      : {describe_specs(norm_stats)}")
     return norm_stats
 
 
@@ -571,6 +577,60 @@ def compute_anomaly_climatology(args, working_sites, val_sites, resume_ckpt, log
     return anomaly_clim
 
 
+def compute_metric_climatology(args, val_sites, anomaly_clim, train_years, logger):
+    """
+    Build the per-site climatology used by the prediction metrics.
+
+    Stored in every checkpoint so ``phenonn predict`` never rebuilds it. It
+    covers the validation sites only, which is what the prediction path
+    needs and keeps the snapshot small (about 12 MB for 50k sites).
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Reads ``clim_years``, ``clim_target_dir``, ``target_dir``,
+        ``cache_dir`` and ``cache_climatology``.
+    val_sites : list of str
+    anomaly_clim : dict or None
+        Already-built climatology (union of working and validation sites)
+        when ``--anomaly_mode`` is on; reused instead of a second read.
+    train_years : list of int
+        Fallback window when ``--clim_years`` is empty.
+    logger : Logger
+
+    Returns
+    -------
+    metric_clim : dict
+        ``{site_id: (36,) float32}``.
+    metric_clim_years : list of int
+    """
+    clim_years = parse_year_list(getattr(args, "clim_years", "")) or list(train_years)
+    if anomaly_clim:
+        metric_clim = {s: anomaly_clim[s] for s in val_sites if s in anomaly_clim}
+        logger.info(
+            f"Metric clim.    : {len(metric_clim):,} val sites from the anomaly "
+            f"climatology ({min(clim_years)}-{max(clim_years)})"
+        )
+        return metric_clim, clim_years
+
+    clim_dir = args.clim_target_dir or args.target_dir
+    mode = "auto" if getattr(args, "cache_climatology", False) else "off"
+    logger.start_task(
+        "Metric climatology",
+        f"{len(clim_years)} years × {len(val_sites):,} sites",
+    )
+    metric_clim = cached_climatology_lookup(
+        target_dir=clim_dir,
+        clim_years=clim_years,
+        wanted_sites=val_sites,
+        cache_dir=getattr(args, "cache_dir", ""),
+        mode=mode,
+        verbose=True,
+    )
+    logger.success(f"  {len(metric_clim):,} site climatologies ready")
+    return metric_clim, clim_years
+
+
 # ── Phase 11 — datasets and loaders ─────────────────────────────────────────
 
 
@@ -627,6 +687,9 @@ def create_datasets_and_loaders(
         threaded_read=args.threaded_feature_read,
         parent_map=parent_map,
         daily_mode=("obs" if args.daily_lai else "off"),
+        cache_dir=args.cache_dir,
+        feature_cache=args.feature_cache,
+        parent_map_path=args.parent_map,
     )
     if len(val_ds) == 0:
         raise RuntimeError("Validation dataset is empty. Check inputs.")
@@ -659,6 +722,9 @@ def create_datasets_and_loaders(
         parent_map=parent_map,
         daily_mode=("interp" if args.daily_lai else "off"),
         daily_target_dir=args.daily_target_dir,
+        cache_dir=args.cache_dir,
+        feature_cache=args.feature_cache,
+        parent_map_path=args.parent_map,
     )
     if len(train_full) == 0:
         raise RuntimeError("Training dataset is empty. Check inputs.")
@@ -1126,6 +1192,9 @@ def _checkpoint_extras(
         "anomaly_mode": bool(args.anomaly_mode),
         "anomaly_clim": shared.anomaly_clim,
         "clim_years": (parse_year_list(args.clim_years) if args.anomaly_mode else None),
+        # ── Metric climatology (val sites, always stored) ──
+        "metric_clim": shared.metric_clim,
+        "metric_clim_years": list(shared.metric_clim_years),
         # ── Mode flags that drive the wrapper and denormalisation ──
         "pft_mixing": bool(args.pft_mixing),
         "pft_meteo_only": bool(args.pft_meteo_only),
@@ -1659,6 +1728,10 @@ def load_shared(args, logger, device, resume_ckpt=None) -> SharedData:
         args, working_sites, val_sites, resume_ckpt, logger
     )
 
+    metric_clim, metric_clim_years = compute_metric_climatology(
+        args, val_sites, anomaly_clim, train_years, logger
+    )
+
     val_ds, val_loader, train_full = create_datasets_and_loaders(
         args,
         val_sites,
@@ -1681,6 +1754,8 @@ def load_shared(args, logger, device, resume_ckpt=None) -> SharedData:
         norm_stats=norm_stats,
         co2_lut=co2_lut,
         anomaly_clim=anomaly_clim,
+        metric_clim=metric_clim,
+        metric_clim_years=metric_clim_years,
         val_ds=val_ds,
         val_loader=val_loader,
         train_full=train_full,

@@ -105,6 +105,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from phenonn.data.normalisation import get_spec, inverse_numpy
 from phenonn.utils.config import ALL_FEATURES, PFT_FNAME, PFT_NAMES
 from phenonn.utils.logger import Logger
 from phenonn.utils.wrappers import _OBS_POSITIONS
@@ -320,6 +321,7 @@ def load_checkpoint(args, device: torch.device, logger: Logger) -> Dict:
         "norm_stats": raw.get("norm_stats", None),
         "co2_lut": raw.get("co2_lut", None),
         "anomaly_clim": raw.get("anomaly_clim", None),
+        "metric_clim": raw.get("metric_clim", None),
         "anomaly_mode": anomaly_mode,
         "pft_mixing": pft_mixing,
         "pft_meteo_only": pft_meteo_only,
@@ -327,6 +329,11 @@ def load_checkpoint(args, device: torch.device, logger: Logger) -> Dict:
         "daily_lai": daily_lai,
         "train_site_ids": train_site_ids,
         "val_site_ids": val_site_ids,
+        # Required by resolve_climatology() to validate an anomaly window.
+        "clim_years": parse_years(
+            raw.get("clim_years") or train_args.get("clim_years", "")
+        ),
+        "metric_clim_years": parse_years(raw.get("metric_clim_years") or []),
     }
 
     logger.success(
@@ -614,23 +621,28 @@ def resolve_climatology(
         logger.info("Climatology   : disabled by --no_climatology")
         return None, []
 
-    clim = ckpt.get("anomaly_clim")
+    clim = ckpt.get("metric_clim")
+    if clim and not all(s in clim for s in site_ids):
+        logger.info(
+            f"Climatology   : checkpoint metric_clim covers {len(clim):,} sites, "
+            f"not all {len(site_ids):,} requested; rebuilding"
+        )
+        clim = None
     if clim:
-        # The checkpoint's climatology is authoritative: validate the years it
-        # was actually built on, not the ones requested on the command line.
-        ckpt_clim_years = parse_years(ckpt.get("clim_years") or [])
-        if ckpt_clim_years:
-            if clim_years and clim_years != ckpt_clim_years:
+        # Written by every modern training run for the validation sites.
+        stored_years = parse_years(ckpt.get("metric_clim_years") or [])
+        if stored_years:
+            if clim_years and clim_years != stored_years:
                 logger.warning(
-                    "Checkpoint climatology was built on "
-                    f"{min(ckpt_clim_years)}–{max(ckpt_clim_years)}; ignoring "
+                    "Checkpoint metric climatology was built on "
+                    f"{min(stored_years)}-{max(stored_years)}; ignoring "
                     f"--clim_years={args.clim_years!r}."
                 )
-            clim_years = ckpt_clim_years
+            clim_years = stored_years
         else:
             msg = (
-                "Checkpoint stores an anomaly climatology but no "
-                "clim_years, so its window cannot be checked for leakage."
+                "Checkpoint stores a metric climatology but no "
+                "metric_clim_years, so its window cannot be checked for leakage."
             )
             if protocol in ("A", "B") and not allow_leakage:
                 raise LeakageError(
@@ -639,30 +651,63 @@ def resolve_climatology(
                     "documented diagnostic run."
                 )
             logger.warning(msg)
-        logger.info(f"Climatology   : {len(clim):,} sites from checkpoint")
-    elif clim_years:
-        clim_dir = (
-            args.clim_target_dir or train_args.get("clim_target_dir", "") or target_dir
+        logger.info(
+            f"Climatology   : {len(clim):,} sites from checkpoint (metric_clim)"
         )
-        logger.start_task(
-            "Building climatology",
-            f"{len(clim_years)} years × {len(site_ids):,} sites ({clim_dir})",
-        )
-        from phenonn.data.lai_dataset import compute_climatology_lookup
-
-        clim = compute_climatology_lookup(
-            target_dir=clim_dir,
-            clim_years=clim_years,
-            wanted_sites=site_ids,
-            verbose=False,
-        )
-        logger.success(f"  {len(clim):,} site climatologies built")
     else:
-        logger.warning(
-            "No climatology years available — anomaly metrics will be skipped. "
-            "Pass --clim_years explicitly."
-        )
-        return None, []
+        clim = ckpt.get("anomaly_clim")
+        if clim:
+            # The checkpoint's climatology is authoritative: validate the years it
+            # was actually built on, not the ones requested on the command line.
+            ckpt_clim_years = parse_years(ckpt.get("clim_years") or [])
+            if ckpt_clim_years:
+                if clim_years and clim_years != ckpt_clim_years:
+                    logger.warning(
+                        "Checkpoint climatology was built on "
+                        f"{min(ckpt_clim_years)}-{max(ckpt_clim_years)}; ignoring "
+                        f"--clim_years={args.clim_years!r}."
+                    )
+                clim_years = ckpt_clim_years
+            else:
+                msg = (
+                    "Checkpoint stores an anomaly climatology but no "
+                    "clim_years, so its window cannot be checked for leakage."
+                )
+                if protocol in ("A", "B") and not allow_leakage:
+                    raise LeakageError(
+                        f"{msg} Re-predict from a checkpoint written by the "
+                        "paper protocol, or pass --allow_leakage for a "
+                        "documented diagnostic run."
+                    )
+                logger.warning(msg)
+            logger.info(f"Climatology   : {len(clim):,} sites from checkpoint")
+        elif clim_years:
+            clim_dir = (
+                args.clim_target_dir
+                or train_args.get("clim_target_dir", "")
+                or target_dir
+            )
+            logger.start_task(
+                "Building climatology",
+                f"{len(clim_years)} years × {len(site_ids):,} sites ({clim_dir})",
+            )
+            from phenonn.data.lai_dataset import cached_climatology_lookup
+
+            clim = cached_climatology_lookup(
+                target_dir=clim_dir,
+                clim_years=clim_years,
+                wanted_sites=site_ids,
+                cache_dir=getattr(args, "cache_dir", ""),
+                mode=("auto" if getattr(args, "cache_climatology", False) else "off"),
+                verbose=True,
+            )
+            logger.success(f"  {len(clim):,} site climatologies built")
+        else:
+            logger.warning(
+                "No climatology years available - anomaly metrics will be skipped. "
+                "Pass --clim_years explicitly."
+            )
+            return None, []
 
     if train_years:
         try:
@@ -747,6 +792,9 @@ def create_dataset_and_loader(
         normalize_lai=bool(train_args.get("normalize_lai", True)),
         verbose=True,
         parent_map=parent_map,
+        cache_dir=getattr(args, "cache_dir", ""),
+        feature_cache=getattr(args, "feature_cache", "off"),
+        parent_map_path=(args.parent_map or train_args.get("parent_map", "")),
     )
     if len(dataset) == 0:
         raise RuntimeError("No prediction samples produced.")
@@ -771,13 +819,12 @@ def _denormalise_row(
     denorm_lai,
     anomaly_clim,
     norm_stats,
-    lai_mean,
-    lai_std,
+    lai_spec,
 ):
     """
     Return the ``(pred_real, tgt_real, pred_norm, tgt_norm)`` tuple for one row.
 
-    Handles the three flavours of training target: anomaly, z-scored LAI,
+    Handles the three flavours of training target: anomaly, normalised LAI,
     raw LAI.
 
     Parameters
@@ -789,8 +836,8 @@ def _denormalise_row(
     is_anomaly, denorm_lai : bool
     anomaly_clim : dict or None
     norm_stats : dict or None
-    lai_mean, lai_std : float
-        LAI z-scoring statistics, used only when ``denorm_lai`` is True.
+    lai_spec : mapping
+        Target transform spec, used only when ``denorm_lai`` is True.
 
     Returns
     -------
@@ -811,8 +858,8 @@ def _denormalise_row(
         return pred_v + clim_vec, tgt_v + clim_vec, pred_v, tgt_v
     if denorm_lai:
         return (
-            pred_v * lai_std + lai_mean,
-            tgt_v * lai_std + lai_mean,
+            inverse_numpy(pred_v, lai_spec),
+            inverse_numpy(tgt_v, lai_spec),
             pred_v,
             tgt_v,
         )
@@ -860,9 +907,7 @@ def run_inference(
     if is_daily:
         logger.info("Daily model   : sampling the 365-day output at the 36 dekads")
 
-    if denorm_lai:
-        lai_mean = float(norm_stats["LAI"]["mean"])
-        lai_std = float(norm_stats["LAI"]["std"])
+    lai_spec = get_spec(norm_stats, "LAI") if denorm_lai else {"kind": "none"}
 
     logger.start_task("Running inference", f"{len(dataset):,} samples")
     rows = []
@@ -885,8 +930,7 @@ def run_inference(
                     denorm_lai,
                     anomaly_clim,
                     norm_stats,
-                    lai_mean if denorm_lai else 0.0,
-                    lai_std if denorm_lai else 1.0,
+                    lai_spec,
                 )
                 for k, (month, day, doy) in enumerate(_OBS_DATES):
                     rows.append(

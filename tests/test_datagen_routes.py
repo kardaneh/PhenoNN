@@ -34,6 +34,7 @@ from phenonn.datagen.add_soil_moisture_proxy import (
     _weights,
 )
 from phenonn.datagen.create_stats_file import (
+    ChannelAccumulator,
     RunningStats,
     _scan_features_year,
     _scan_targets_year,
@@ -192,15 +193,15 @@ class TestStatsAcrossRoutes(unittest.TestCase):
                 },
             ).to_netcdf(tgt_path, engine="netcdf4")
 
-            feats = {"Tmin": RunningStats(), "SMI": RunningStats()}
+            feats = {"Tmin": ChannelAccumulator(), "SMI": ChannelAccumulator()}
             _scan_features_year(feat_path, feats, n_sites=0, seed=42)
             lai = RunningStats()
             _scan_targets_year(tgt_path, lai, n_sites=0, seed=42)
 
-            self.assertEqual(feats["Tmin"].n, 6)
-            self.assertEqual(feats["SMI"].n, 6)
+            self.assertEqual(feats["Tmin"].raw.n, 6)
+            self.assertEqual(feats["SMI"].raw.n, 6)
             self.assertEqual(lai.n, 4)
-            self.assertAlmostEqual(feats["Tmin"].mean_std()["mean"], 3.5)
+            self.assertAlmostEqual(feats["Tmin"].raw.mean_std()["mean"], 3.5)
             self.assertAlmostEqual(lai.mean_std()["mean"], 2.5)
 
 

@@ -172,6 +172,7 @@ checkpoints/*
 !checkpoints/.gitkeep
 
 /runs
+/cache
 
 logs/*
 !logs/.gitkeep

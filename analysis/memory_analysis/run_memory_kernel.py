@@ -239,23 +239,46 @@ def main():
         if args.linearity_amplitude is not None
         else 2.0 * args.delta
     )
+    # Compare at a lag where the kernel actually responds. Lag 0 is the last
+    # day of the window and cannot influence any output dekad, so using it
+    # makes both responses zero and the ratio meaningless.
+    ref_lag = (
+        int(kernel.loc[kernel["mean_abs_delta"].idxmax(), "lag_days"])
+        if kernel.size
+        else 90
+    )
     pert2 = _kernel_for_mask(
-        ctx, loader, lats, args.channel, amp2, _impulse_mask(seq_length, 0), site_ids
+        ctx,
+        loader,
+        lats,
+        args.channel,
+        amp2,
+        _impulse_mask(seq_length, ref_lag),
+        site_ids,
     )
     _, abs2 = _response(base, pert2)
     if kernel.size:
-        ref = float(kernel.iloc[0]["mean_abs_delta"])
-        ratio = float(np.nanmean(abs2) / max(ref, 1e-12))
-        deviation = abs(ratio - amp2 / max(args.delta, 1e-12))
+        rows = kernel[kernel["lag_days"] == ref_lag]
+        ref = float(rows["mean_abs_delta"].iloc[0]) if len(rows) else 0.0
+        expected = amp2 / max(args.delta, 1e-12)
+        if ref > 1e-12:
+            ratio = float(np.nanmean(abs2) / ref)
+            deviation = abs(ratio - expected)
+            description = (
+                f"response ratio at lag {ref_lag} d, {amp2:g} vs {args.delta:g}; "
+                f"expected {expected:.2f}, deviation {deviation:.2f} "
+                f"(tol {args.linearity_tolerance})"
+            )
+        else:
+            ratio = float("nan")
+            description = (
+                f"no response at lag {ref_lag} d; linearity check not applicable"
+            )
         controls.append(
             {
                 "control": "linearity",
                 "value": ratio,
-                "description": (
-                    f"response ratio at {amp2:g} vs {args.delta:g}; "
-                    f"expected {amp2 / max(args.delta, 1e-12):.2f}, "
-                    f"deviation {deviation:.2f} (tol {args.linearity_tolerance})"
-                ),
+                "description": description,
             }
         )
         print(
