@@ -44,7 +44,6 @@ import pandas as pd  # noqa: E402
 import xarray as xr  # noqa: E402
 
 from phenonn.utils.config import (  # noqa: E402
-    CO2_FEATURES,
     DYNAMIC_FEATURES,
     FEATURES_FNAME,
     PFT_COLS,
@@ -205,14 +204,10 @@ def site_blocks(
     n_slots = max(1, n_total // block)
     rng = np.random.RandomState(seed)
     slots = rng.choice(n_slots, size=min(n_blocks, n_slots), replace=False)
-    return sorted(
-        (int(s) * block, min(int(s) * block + block, n_total)) for s in slots
-    )
+    return sorted((int(s) * block, min(int(s) * block + block, n_total)) for s in slots)
 
 
-def dominant_pft(
-    parent_map: str, pft_path: str, n_parent: int
-) -> np.ndarray:
+def dominant_pft(parent_map: str, pft_path: str, n_parent: int) -> np.ndarray:
     """Return the dominant PFT index of every 0.1-degree cell.
 
     The 0.05-degree PFT fractions of all children of a cell are summed and the
@@ -241,7 +236,13 @@ def recommend(row: Dict[str, float]) -> str:
         return "heavy right tail: log1p_zscore or sqrt_zscore"
     if np.isfinite(hi) and np.isfinite(p99) and p99 > 0 and hi > 10 * p99:
         return "outliers: minmax on p1-p99 (clip)"
-    if np.isfinite(lo) and np.isfinite(hi) and lo >= 0 and (hi - lo) < 30 and abs(skew) < 1.0:
+    if (
+        np.isfinite(lo)
+        and np.isfinite(hi)
+        and lo >= 0
+        and (hi - lo) < 30
+        and abs(skew) < 1.0
+    ):
         return "bounded: minmax"
     if abs(skew) < 0.5:
         return "near-symmetric: zscore"
@@ -293,7 +294,9 @@ def audit_features(
                         group_audits.setdefault(key, Moments())
                         group_audits[key].update(values[:, cols])
         ds.close()
-        print(f"  {year}: {len(DYNAMIC_FEATURES)} channels  ({i_year + 1}/{len(years)})")
+        print(
+            f"  {year}: {len(DYNAMIC_FEATURES)} channels  ({i_year + 1}/{len(years)})"
+        )
 
     qs = (1, 5, 50, 95, 99)
     rows = []
@@ -348,7 +351,10 @@ def audit_targets(args, years: Sequence[int]) -> pd.DataFrame:
         samples.append(values[rng.choice(values.size, take, replace=False)])
     s = acc.summary()
     pooled = np.concatenate(samples) if samples else np.array([], dtype=np.float32)
-    row = {"channel": "LAI", **{k: s.get(k, np.nan) for k in ("n", "mean", "std", "skew", "min", "max")}}
+    row = {
+        "channel": "LAI",
+        **{k: s.get(k, np.nan) for k in ("n", "mean", "std", "skew", "min", "max")},
+    }
     if pooled.size:
         for q, v in zip((1, 5, 50, 95, 99), np.percentile(pooled, (1, 5, 50, 95, 99))):
             row[f"p{q}"] = float(v)
@@ -394,7 +400,9 @@ def plot_distributions(pools: Dict[str, np.ndarray], out: str) -> None:
         return
     cols = 4
     rows = int(np.ceil(len(names) / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(4.0 * cols, 2.6 * rows), squeeze=False)
+    fig, axes = plt.subplots(
+        rows, cols, figsize=(4.0 * cols, 2.6 * rows), squeeze=False
+    )
     for ax, name in zip(axes.ravel(), names):
         x = pools[name]
         x = x[np.isfinite(x)]
@@ -410,7 +418,9 @@ def plot_distributions(pools: Dict[str, np.ndarray], out: str) -> None:
             edges = np.linspace(lo, hi, bins)
         ax.hist(x, bins=edges, color="#1f77b4", alpha=0.85)
         ax.axvline(float(np.mean(x)), color="#d62728", lw=1.2, label="mean")
-        ax.axvline(float(np.median(x)), color="#2e7d32", lw=1.2, ls="--", label="median")
+        ax.axvline(
+            float(np.median(x)), color="#2e7d32", lw=1.2, ls="--", label="median"
+        )
         ax.set_title(name, fontsize=10)
         ax.tick_params(labelsize=8)
     for ax in axes.ravel()[len(names) :]:
@@ -430,8 +440,13 @@ def plot_skew_bounds(table: pd.DataFrame, out: str) -> None:
     fig, ax = plt.subplots(figsize=(7.0, 5.0), layout="constrained")
     ax.scatter(d["zero_frac"], d["skew"], s=40, color="#1f77b4")
     for _, row in d.iterrows():
-        ax.annotate(row["channel"], (row["zero_frac"], row["skew"]),
-                    xytext=(4, 3), textcoords="offset points", fontsize=8)
+        ax.annotate(
+            row["channel"],
+            (row["zero_frac"], row["skew"]),
+            xytext=(4, 3),
+            textcoords="offset points",
+            fontsize=8,
+        )
     ax.axhline(1.5, color="grey", ls="--", lw=1.0)
     ax.axvline(0.4, color="grey", ls=":", lw=1.0)
     ax.set_xlabel("fraction of exact zeros")
@@ -451,11 +466,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--features_dir", required=True, help="ERA5_daily_pixelset_{Y}.nc")
     p.add_argument("--target_dir", default="", help="LAI_dekadal_{Y}.nc (optional)")
     p.add_argument("--pft_dir", default="", help="PFTmap_{Y}.nc (optional)")
-    p.add_argument("--parent_map", default="", help="selected_pixels01_1.nc (active cells)")
+    p.add_argument(
+        "--parent_map", default="", help="selected_pixels01_1.nc (active cells)"
+    )
     p.add_argument("--years", default="1992-2009")
     p.add_argument("--n_sites", type=int, default=1000)
     p.add_argument("--stride", type=int, default=3, help="Day stride in the scan.")
-    p.add_argument("--per_year", type=int, default=4000, help="Quantile subsample per year.")
+    p.add_argument(
+        "--per_year", type=int, default=4000, help="Quantile subsample per year."
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--pft_year", type=int, default=0, help="0 = first --years entry.")
     p.add_argument("--output_dir", default="runs/experiments/norm_audit")
@@ -473,15 +492,21 @@ def main() -> None:
         pft_year = args.pft_year or years[0]
         path = os.path.join(args.pft_dir, PFT_FNAME.format(year=pft_year))
         if os.path.exists(path):
-            with xr.open_dataset(args.parent_map, engine="netcdf4", decode_times=False) as ds:
+            with xr.open_dataset(
+                args.parent_map, engine="netcdf4", decode_times=False
+            ) as ds:
                 n_parent = int(ds.sizes.get("site", 0))
             pft_group = dominant_pft(args.parent_map, path, n_parent)
-            print(f"PFT groups    : {np.unique(pft_group).size} dominant PFTs ({pft_year})")
+            print(
+                f"PFT groups    : {np.unique(pft_group).size} dominant PFTs ({pft_year})"
+            )
 
     table, by_pft, pools = audit_features(args, years, pft_group)
     table.to_csv(os.path.join(args.output_dir, "feature_stats.csv"), index=False)
     if not by_pft.empty:
-        by_pft.to_csv(os.path.join(args.output_dir, "feature_stats_by_pft.csv"), index=False)
+        by_pft.to_csv(
+            os.path.join(args.output_dir, "feature_stats_by_pft.csv"), index=False
+        )
 
     pft_table = audit_pft_channels(args, years[0]) if args.pft_dir else pd.DataFrame()
     if not pft_table.empty:
@@ -489,9 +514,13 @@ def main() -> None:
 
     target = audit_targets(args, years) if args.target_dir else pd.DataFrame()
     if not target.empty:
-        target.to_csv(os.path.join(args.output_dir, "target_lai_stats.csv"), index=False)
+        target.to_csv(
+            os.path.join(args.output_dir, "target_lai_stats.csv"), index=False
+        )
 
-    plot_distributions(pools, os.path.join(args.output_dir, "feature_distributions.png"))
+    plot_distributions(
+        pools, os.path.join(args.output_dir, "feature_distributions.png")
+    )
     plot_skew_bounds(table, os.path.join(args.output_dir, "feature_skew_bounds.png"))
 
     lines = [
@@ -510,9 +539,13 @@ def main() -> None:
             "{log1p_skew:+.2f} | {sqrt_skew:+.2f} | {recommendation} |".format(**r)
         )
     if not pft_table.empty:
-        lines += ["", "## PFT fractions", "",
-                  "| channel | mean | std | zeros | recommendation |",
-                  "|---|---:|---:|---:|---|"]
+        lines += [
+            "",
+            "## PFT fractions",
+            "",
+            "| channel | mean | std | zeros | recommendation |",
+            "|---|---:|---:|---:|---|",
+        ]
         for _, r in pft_table.iterrows():
             lines.append(
                 f"| {r['channel']} | {r['mean']:.4f} | {r['std']:.4f} | "
@@ -520,10 +553,14 @@ def main() -> None:
             )
     if not target.empty:
         t = target.iloc[0]
-        lines += ["", "## Target LAI", "",
-                  f"mean {t['mean']:.4f}, std {t['std']:.4f}, "
-                  f"range [{t['min']:.3f}, {t['max']:.3f}], "
-                  f"quantization step {t.get('quantization_step', float('nan')):.4f}"]
+        lines += [
+            "",
+            "## Target LAI",
+            "",
+            f"mean {t['mean']:.4f}, std {t['std']:.4f}, "
+            f"range [{t['min']:.3f}, {t['max']:.3f}], "
+            f"quantization step {t.get('quantization_step', float('nan')):.4f}",
+        ]
     with open(os.path.join(args.output_dir, "summary.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
 
