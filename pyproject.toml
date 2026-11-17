@@ -51,6 +51,7 @@ path = "phenonn/version.py"
 exclude = [
   "pixelset1",
   "runs",
+  "cache",
   "data",
   "PhenoNN Cleanup*.md",
 ]

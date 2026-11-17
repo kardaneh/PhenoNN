@@ -56,7 +56,8 @@ ecosystems in climate models, with four research directions:
   `site_id`; no per-site CSVs required.
 - **RAM-resident trainer** — loads a working set of sites and years
   once, then sub-selects sample indices each epoch. No per-epoch disk
-  I/O.
+  I/O. An optional on-disk cache (`--feature_cache auto`, off by
+  default) lets later runs reuse those raw arrays.
 - **PFT decomposition** — the model can output 15 pure-LAI curves that
   a wrapper mixes into a single cell-level LAI using the local PFT
   fractions.

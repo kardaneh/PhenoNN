@@ -181,4 +181,25 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume", default="")
 
+    # ── Performance (optional) ──
+    p.add_argument(
+        "--feature_cache",
+        choices=("off", "read", "write", "auto"),
+        default="off",
+        help="Optional on-disk cache for the raw daily features. Off by "
+        "default; 'auto' reads a matching entry when present and stores "
+        "one otherwise.",
+    )
+    p.add_argument(
+        "--cache_dir",
+        default="",
+        help="Cache root. Empty uses $PHENONN_CACHE_DIR, then ./cache, then "
+        "~/.cache/phenonn.",
+    )
+    p.add_argument(
+        "--cache_climatology",
+        action="store_true",
+        help="Cache the per-site metric climatology as a small .npz.",
+    )
+
     return p.parse_args(argv)
