@@ -352,16 +352,17 @@ report route.
 - `co2` (from the TRENDY LUT, per year in range)
 
 Optional `--n_sites` subsamples sites per file for speed. Output is
-byte-identical to the legacy format.
+byte-identical to the previous format.
 
 **Output:** `norm_stats_1992_2019.json` — `{feat: {mean, std}}` for every
 channel, plus an optional `_transforms` block selecting `zscore`,
-`log1p_zscore`, `sqrt_zscore`, `minmax` or `none` per channel.
+`log1p_zscore`, `sqrt_zscore`, `cbrt_zscore`, `asinh_zscore`, `minmax` or
+`none` per channel.
 
-**Profiles:** `--profile {legacy,n1,n2,n3}` emits the named experiment
-policies (see `phenonn/datagen/norm_profiles.py`); `--transform_spec file.json`
-overrides them channel by channel. `legacy` (the default) writes the same file
-as before.
+**Profiles:** `--profile {default,n1,n2,n3,p_sqrt,p_cbrt,p_asinh,p_minmax}` emits the
+named experiment policies (see `phenonn/datagen/norm_profiles.py`);
+`--transform_spec file.json` overrides them channel by channel. `default`
+writes the same file as before.
 
 ---
 

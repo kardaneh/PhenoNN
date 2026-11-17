@@ -17,8 +17,8 @@ may add a ``_transforms`` block that selects the map applied to each channel::
         "pft1_frac": {"kind": "none"}
     }
 
-Channels absent from the block keep the legacy rule: ``log1p`` then z-score for
-``LOG_TRANSFORM_FEATURES``, z-score otherwise. A stats file without
+Channels absent from the block keep the default rule: ``log1p`` then z-score
+for ``LOG_TRANSFORM_FEATURES``, z-score otherwise. A stats file without
 ``_transforms`` therefore reproduces the previous behaviour exactly.
 """
 
@@ -64,7 +64,7 @@ _EPS = 1e-8
 
 
 def default_kind(name: str) -> str:
-    """Return the legacy transform kind of a channel."""
+    """Return the default transform kind of a channel."""
     return "log1p_zscore" if name in LOG_TRANSFORM_FEATURES else "zscore"
 
 
@@ -122,7 +122,7 @@ def get_spec(norm_stats, name: str) -> Dict[str, object]:
 
 
 def forward_numpy(x: np.ndarray, spec: Mapping[str, object]) -> np.ndarray:
-    """Apply a spec to a numpy array (same dtype behaviour as the legacy code)."""
+    """Apply a spec to a numpy array (same dtype behaviour as before)."""
     kind = spec["kind"]
     if kind == "none":
         return x
@@ -226,7 +226,7 @@ def finalise_specs(
     A channel can have different statistics in the raw, ``log1p`` and ``sqrt``
     spaces. The builder therefore passes ``moments[name][kind]`` so the spec
     carries the ``mean``/``std`` that match its own transform; reusing the flat
-    (legacy) entry would scale a channel with the wrong statistics.
+    (default) entry would scale a channel with the wrong statistics.
     """
     out: Dict[str, dict] = {}
     for name, spec in specs.items():

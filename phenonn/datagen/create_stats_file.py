@@ -301,7 +301,7 @@ def _scan_features_year(
     path : pathlib.Path
         Path to ``ERA5_daily_pixelset_{Y}.nc``.
     accs : dict
-        Mapping ``feature_name -> RunningStats``.
+        Mapping ``feature_name -> ChannelAccumulator``.
     n_sites : int
         Sites to subsample (0 = use all).
     seed : int
@@ -456,8 +456,9 @@ def parse_args():
     )
     p.add_argument(
         "--profile",
-        default="legacy",
-        help="Transform profile(s), comma separated: legacy, n1, n2, n3 "
+        default="default",
+        help="Transform profile(s), comma separated: default, n1, n2, n3, "
+        "p_sqrt, p_cbrt, p_asinh, p_minmax "
         "(one scan can emit several with --output_dir).",
     )
     p.add_argument(

@@ -340,7 +340,7 @@ class PFTMixingWrapper(nn.Module):
         self.register_buffer("pft_means", means)
         self.register_buffer("pft_stds", stds)
 
-        # Per-channel specs for the inverse map. Legacy stats give zscore for
+        # Per-channel specs for the inverse map. Default stats give zscore for
         # every channel, so the vectorised path above stays bit-identical.
         self._pft_specs = [
             get_spec(norm_stats, f"pft{k}_frac") for k in range(1, n_pft + 1)
